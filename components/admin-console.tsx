@@ -28,6 +28,7 @@ export function AdminConsole() {
   const [clinicItems, setClinicItems] = useState<ClinicItem[]>([])
   const [tab, setTab] = useState<'overview' | 'clinics' | 'catalog' | 'users'>('overview')
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
+  const [adminProductImage, setAdminProductImage] = useState<File | null>(null)
   const [adminLookupBusy, setAdminLookupBusy] = useState(false)
   const [adminLookupError, setAdminLookupError] = useState('')
   const [adminLookupSources, setAdminLookupSources] = useState<{ title: string; url: string }[]>([])
@@ -113,11 +114,16 @@ export function AdminConsole() {
 
   useEffect(() => { void load() }, [load])
 
-  async function searchAdminProduct(formElement: HTMLFormElement) {
+  async function searchAdminProduct(formElement: HTMLFormElement, analyzePhoto = false) {
     const form = new FormData(formElement)
     const name = String(form.get('name') ?? '').trim()
     const barcode = String(form.get('barcode') ?? '').trim()
-    if (!name && !barcode) {
+    const image = adminProductImage ?? form.get('image')
+    if (analyzePhoto && (!(image instanceof File) || image.size === 0)) {
+      setAdminLookupError(t('selectPhotoForAnalysis'))
+      return
+    }
+    if (!analyzePhoto && !name && !barcode) {
       setAdminLookupError(t('adminAiSearchPrompt'))
       return
     }
@@ -127,6 +133,10 @@ export function AdminConsole() {
     const request = new FormData()
     request.set('query', name)
     request.set('barcode', barcode)
+    if (analyzePhoto && image instanceof File) {
+      request.set('image', image)
+      request.set('analyze_photo', 'true')
+    }
     try {
       const response = await fetch('/api/product-assist', { method: 'POST', body: request })
       const result = await response.json() as {
@@ -178,6 +188,7 @@ export function AdminConsole() {
   }
 
   function reviewClinicItem(item: ClinicItem) {
+    setAdminProductImage(null)
     setSelectedProduct({
       id: '',
       name: item.name,
@@ -212,7 +223,7 @@ export function AdminConsole() {
       return
     }
     const fileValue = form.get('image')
-    const file = fileValue instanceof File && fileValue.size > 0 ? fileValue : null
+    const file = adminProductImage ?? (fileValue instanceof File && fileValue.size > 0 ? fileValue : null)
     let imagePath = selectedProduct?.approved_image_path ?? null
     if (file && file.size > 0) {
       if (file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
@@ -255,7 +266,7 @@ export function AdminConsole() {
       }
     }
     setBusy(false)
-    setSelectedProduct(null); setNotice(t('catalogProductSaved'))
+    setSelectedProduct(null); setAdminProductImage(null); setNotice(t('catalogProductSaved'))
     await load()
   }
 
@@ -382,7 +393,7 @@ export function AdminConsole() {
     })}</div>}
     {tab === 'catalog' && <div className="admin-management">
       <section className="card admin-section">
-        <div className="section-heading"><div><h2>{t('globalProducts')}</h2><p className="subtle">{t('catalogAdminDescription')}</p></div><button type="button" className="primary-button" onClick={() => setSelectedProduct({ id: '', name: '', description: '', barcode: null, category_id: null, category_ids: [], brand_id: null, approved_image_path: null, is_approved: false, presentation: 'individual', product_type: '', model: '', color: '' })}>{t('createProduct')}</button></div>
+        <div className="section-heading"><div><h2>{t('globalProducts')}</h2><p className="subtle">{t('catalogAdminDescription')}</p></div><button type="button" className="primary-button" onClick={() => { setAdminProductImage(null); setSelectedProduct({ id: '', name: '', description: '', barcode: null, category_id: null, category_ids: [], brand_id: null, approved_image_path: null, is_approved: false, presentation: 'individual', product_type: '', model: '', color: '' }) }}>{t('createProduct')}</button></div>
         {selectedProduct && <form key={`admin-product-${selectedProduct.id}-${selectedProduct.name}-${selectedProduct.barcode ?? ''}`} className="admin-product-form" onSubmit={(event) => void saveProduct(event)}>
           <h3>{selectedProduct.id ? t('editProduct') : t('createProduct')}</h3>
           <div className="form-grid">
@@ -395,10 +406,15 @@ export function AdminConsole() {
             <label>{t('model')}<input name="model" defaultValue={selectedProduct.model} maxLength={120} /></label>
             <label>{t('color')}<input name="color" defaultValue={selectedProduct.color} maxLength={80} /></label>
             <label className="field-wide">{t('description')}<textarea name="description" rows={3} defaultValue={selectedProduct.description} key={`pdescription-${selectedProduct.id}`} /></label>
-            <label>{t('approvedProductImage')}<input type="file" name="image" accept="image/jpeg,image/png,image/webp" /></label>
+            <label>{t('approvedProductImage')}<input type="file" name="image" accept="image/jpeg,image/png,image/webp" onChange={(event) => setAdminProductImage(event.target.files?.[0] ?? null)} /></label>
             <label className="checkbox-label"><input type="checkbox" name="is_approved" defaultChecked={selectedProduct.is_approved} key={`papproved-${selectedProduct.id}`} />{t('approvedForClinics')}</label>
           </div>
           <div className="admin-ai-tools">
+            <button type="button" className="secondary-button" disabled={adminLookupBusy} onClick={(event) => {
+              const formElement = event.currentTarget.form
+              if (formElement) void searchAdminProduct(formElement, true)
+            }}>{adminLookupBusy ? t('analyzingProductPhoto') : t('analyzeProductPhoto')}</button>
+            <span className="field-hint">{t('adminPhotoAnalysisHint')}</span>
             <button type="button" className="secondary-button" disabled={adminLookupBusy} onClick={(event) => {
               const formElement = event.currentTarget.form
               if (formElement) void searchAdminProduct(formElement)
@@ -407,9 +423,9 @@ export function AdminConsole() {
             {adminLookupError && <p role="alert" className="error-message">{adminLookupError}</p>}
             {adminLookupSources.length > 0 && <ul className="exa-sources">{adminLookupSources.map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul>}
           </div>
-          <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setSelectedProduct(null)}>{t('cancel')}</button><button className="primary-button" disabled={busy}>{busy ? t('saving') : t('saveChanges')}</button></div>
+          <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => { setAdminProductImage(null); setSelectedProduct(null) }}>{t('cancel')}</button><button className="primary-button" disabled={busy}>{busy ? t('saving') : t('saveChanges')}</button></div>
         </form>}
-        <div className="table-wrap"><table><thead><tr><th>{t('name')}</th><th>{t('barcode')}</th><th>{t('brand')}</th><th>{t('approval')}</th><th>{t('actions')}</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td>{product.name}</td><td>{product.barcode || '—'}</td><td>{brands.find((brand) => brand.id === product.brand_id)?.name || '—'}</td><td><span className={`status-badge ${product.is_approved ? 'status-new' : 'status-missing'}`}>{t(product.is_approved ? 'approved' : 'pendingApproval')}</span></td><td><button className="text-button" type="button" onClick={() => setSelectedProduct(product)}>{t('edit')}</button><button className="text-button danger-text" type="button" onClick={() => void deleteProduct(product)}>{t('delete')}</button></td></tr>)}</tbody></table></div>
+        <div className="table-wrap"><table><thead><tr><th>{t('name')}</th><th>{t('barcode')}</th><th>{t('brand')}</th><th>{t('approval')}</th><th>{t('actions')}</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td>{product.name}</td><td>{product.barcode || '—'}</td><td>{brands.find((brand) => brand.id === product.brand_id)?.name || '—'}</td><td><span className={`status-badge ${product.is_approved ? 'status-new' : 'status-missing'}`}>{t(product.is_approved ? 'approved' : 'pendingApproval')}</span></td><td><button className="text-button" type="button" onClick={() => { setAdminProductImage(null); setSelectedProduct(product) }}>{t('edit')}</button><button className="text-button danger-text" type="button" onClick={() => void deleteProduct(product)}>{t('delete')}</button></td></tr>)}</tbody></table></div>
       </section>
       <section className="card admin-section">
         <div className="section-heading"><div><h2>{t('manageCategories')}</h2><p className="subtle">{t('categoryAdminDescription')}</p></div></div>

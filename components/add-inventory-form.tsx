@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase/client'
@@ -87,14 +87,10 @@ export function AddInventoryForm() {
   const [catalogImageUrls, setCatalogImageUrls] = useState<Record<string, string>>({})
   const [photoPreview, setPhotoPreview] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
-  const [photoAnalyzing, setPhotoAnalyzing] = useState(false)
-  const [photoAnalysisError, setPhotoAnalysisError] = useState('')
-  const [photoSuggestion, setPhotoSuggestion] = useState<ProductSuggestion | null>(null)
   const [activeLookupKey, setActiveLookupKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
-  const photoAnalysisGeneration = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -170,49 +166,6 @@ export function AddInventoryForm() {
     setScannerOpen(false)
   }, [])
 
-  async function analyzeProductPhoto(file: File) {
-    const generation = ++photoAnalysisGeneration.current
-    setPhotoAnalyzing(true)
-    setPhotoAnalysisError('')
-    setPhotoSuggestion(null)
-    const form = new FormData()
-    form.set('query', query.trim())
-    form.set('barcode', barcode.trim())
-    form.set('image', file)
-    form.set('analyze_photo', 'true')
-    try {
-      const response = await fetch('/api/product-assist', { method: 'POST', body: form })
-      const result = await response.json() as { error?: string; suggestion?: ProductSuggestion; suggestions?: ProductSuggestion[] }
-      if (!response.ok) {
-        if (response.status === 429) throw new Error(t('aiProviderRateLimited'))
-        throw new Error(result.error || t('photoAnalysisFailed'))
-      }
-      const suggestion = result.suggestion ?? result.suggestions?.[0]
-      if (!suggestion?.name) throw new Error(t('photoAnalysisFailed'))
-      if (generation !== photoAnalysisGeneration.current) return
-      setProduct(null)
-      setAiPrefill(suggestion)
-      setPrefillVersion((version) => version + 1)
-      setPhotoSuggestion(suggestion)
-      setQuery(suggestion.name)
-      setBarcode(suggestion.barcode ?? barcode.trim())
-      setCategoryIds(suggestion.category_slugs.flatMap((slug) => {
-        const category = categories.find((value) => value.slug === slug)
-        return category ? [category.id] : []
-      }))
-      const matchingBrand = brands.find((brand) => brand.name.toLocaleLowerCase() === suggestion.brand?.toLocaleLowerCase())
-      setBrandId(matchingBrand?.id ?? '')
-      setNewBrandName(suggestion.brand && !matchingBrand ? suggestion.brand : '')
-      setActiveLookupKey(normalizeLookupKey(suggestion.name))
-    } catch (analysisError) {
-      if (generation === photoAnalysisGeneration.current) {
-        setPhotoAnalysisError(analysisError instanceof Error ? analysisError.message : t('photoAnalysisFailed'))
-      }
-    } finally {
-      if (generation === photoAnalysisGeneration.current) setPhotoAnalyzing(false)
-    }
-  }
-
   async function createClinicBrand() {
     const name = newBrandName.trim()
     if (!name || !clinicId) return
@@ -248,7 +201,6 @@ export function AddInventoryForm() {
       const form = new FormData()
       form.set('query', productBarcode ? '' : term)
       form.set('barcode', productBarcode)
-      if (photo) form.set('image', photo)
       const response = await fetch('/api/product-assist', { method: 'POST', body: form })
       const result = await response.json() as {
         error?: string
@@ -305,28 +257,6 @@ export function AddInventoryForm() {
 
       let externalSearchTerm = searchTerm
       let externalBarcode = inferredBarcode
-      let aiAlreadyRequested = false
-      if (!externalSearchTerm && photo) {
-        setLookupStep('ai')
-        const identified = await requestAi('', '')
-        aiAlreadyRequested = true
-        if (identified) {
-          externalSearchTerm = identified.name
-          externalBarcode = identified.barcode ?? ''
-          if (!('id' in identified)) {
-            const { data, error: catalogError } = await supabase.rpc('search_catalog', { search_term: externalSearchTerm, result_limit: 3 })
-            if (catalogError) throw new Error(catalogError.message)
-            for (const match of (data ?? []) as CatalogProduct[]) {
-              let imageUrl = catalogImageUrls[match.id] || null
-              if (match.approved_image_path && !imageUrl) {
-                imageUrl = `/api/inventory-image?path=${encodeURIComponent(match.approved_image_path)}&user=${encodeURIComponent(userId)}`
-              }
-              foundCandidates.push({ source: 'catalog', product: match, imageUrl })
-            }
-          }
-        }
-      }
-
       if (externalSearchTerm) {
         setLookupStep('pharmacy')
         try {
@@ -397,7 +327,7 @@ export function AddInventoryForm() {
         }
       }
 
-      if ((externalSearchTerm || photo) && !aiAlreadyRequested) {
+      if (externalSearchTerm) {
         setLookupStep('ai')
         try {
           await requestAi(externalSearchTerm, externalBarcode)
@@ -453,7 +383,6 @@ export function AddInventoryForm() {
     setProduct(null)
     setAiPrefill(selected.suggestion)
     setPrefillVersion((version) => version + 1)
-    setPhotoSuggestion(null)
     setQuery(selected.suggestion.name)
     setBarcode(selected.suggestion.barcode ?? barcode)
     const matchingBrand = brands.find((brand) => brand.name.toLocaleLowerCase() === selected.suggestion.brand?.toLocaleLowerCase())
@@ -482,23 +411,15 @@ export function AddInventoryForm() {
   }
 
   function selectPhoto(event: React.ChangeEvent<HTMLInputElement>) {
-    photoAnalysisGeneration.current += 1
     const file = event.target.files?.[0] ?? null
     if (file && (file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) {
       setError(t('invalidImage'))
       event.target.value = ''
       setPhoto(null)
-      setPhotoSuggestion(null)
-      setPhotoAnalyzing(false)
-      setPhotoAnalysisError('')
       return
     }
     setError('')
     setPhoto(file)
-    setPhotoSuggestion(null)
-    setPhotoAnalysisError('')
-    if (file) void analyzeProductPhoto(file)
-    else setPhotoAnalyzing(false)
   }
 
   async function rejectCandidate(candidate: ProductCandidate, lookupKey: string) {
@@ -510,10 +431,6 @@ export function AddInventoryForm() {
     }, { onConflict: 'clinic_id,lookup_key,candidate_key', ignoreDuplicates: true })
     if (rejectionError) { setError(rejectionError.message); return }
     setCandidates((current) => current.filter((value) => candidateKey(value) !== candidateKey(candidate)))
-    if (candidate.source === 'ai' && photoSuggestion?.name === candidate.suggestion.name) {
-      setPhotoSuggestion(null)
-      setAiPrefill(null)
-    }
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -616,16 +533,16 @@ export function AddInventoryForm() {
       <div className="page-heading"><div><p className="eyebrow">{t('inventory')}</p><h1>{t('addItem')}</h1><p className="subtle">{t('addItemDescription')}</p></div></div>
       <form className="card inventory-form" onSubmit={submit}>
         <div className="catalog-search">
-          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setPhotoSuggestion(null); setCategoryIds([]); setCandidates([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
+          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setCategoryIds([]); setCandidates([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
           <p className="field-hint">{t('catalogLookupHint')}</p>
           {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}>{catalogImageUrls[result.id] ? <img src={catalogImageUrls[result.id]} alt="" loading="lazy" decoding="async" onError={() => setCatalogImageUrls((current) => ({ ...current, [result.id]: '' }))} /> : <span className="catalog-result-image" aria-hidden="true">✳</span>}<span className="catalog-result-copy"><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></span></button></li>)}</ul>}
-          {(query.trim().length >= 2 || barcode.trim() || photo) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t(lookupStep === 'catalog' ? 'searchingCatalog' : lookupStep === 'pharmacy' ? 'searchingPharmacies' : lookupStep === 'store' ? 'searchingStores' : 'searchingWithAi') : t('searchCatalogPharmacyAi')}</button>}
+          {(query.trim().length >= 2 || barcode.trim()) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t(lookupStep === 'catalog' ? 'searchingCatalog' : lookupStep === 'pharmacy' ? 'searchingPharmacies' : lookupStep === 'store' ? 'searchingStores' : 'searchingWithAi') : t('searchCatalogPharmacyAi')}</button>}
           {lookupError && <p role="alert" className="error-message">{lookupError}</p>}
         </div>
         {product && <div className="catalog-selected" role="status">{catalogImageUrls[product.id] && <img src={catalogImageUrls[product.id]} alt={product.name} loading="lazy" decoding="async" onError={() => setCatalogImageUrls((current) => ({ ...current, [product.id]: '' }))} />}<span>{t('catalogProductSelected', { name: product.name })}</span><button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]); setBrandId(''); setNewBrandName('') }}>{t('clear')}</button></div>}
         <div className="form-grid">
           <label>{t('name')}<input name="name" required maxLength={160} defaultValue={product?.name ?? aiPrefill?.name ?? ''} key={`name-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
-          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null); setPhotoSuggestion(null); setCandidates([]) }} placeholder={t('barcodePlaceholder')} /></label>
+          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null); setCandidates([]) }} placeholder={t('barcodePlaceholder')} /></label>
           <label>{t('categories')}<select name="category_ids" multiple value={categoryIds} onChange={(event) => setCategoryIds([...event.target.selectedOptions].map((option) => option.value))} aria-describedby="category-selection-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="category-selection-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
           <label>{t('brand')}<select name="brand_id" value={brandId} onChange={(event) => { setBrandId(event.target.value); setNewBrandName('') }}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}{brand.clinic_id ? ` · ${t('clinicOnly')}` : ''}</option>)}</select></label>
           <div className="brand-create-control"><label>{t('brandName')}<input value={newBrandName} onChange={(event) => setNewBrandName(event.target.value)} maxLength={120} placeholder={aiPrefill?.brand || t('brandName')} /></label><button type="button" className="secondary-button" disabled={brandBusy || !newBrandName.trim()} onClick={() => void createClinicBrand()}>{brandBusy ? t('saving') : t('createBrand')}</button><span className="field-hint">{t('clinicBrandCreatedHint')}</span></div>
@@ -644,17 +561,6 @@ export function AddInventoryForm() {
             <span className="field-hint">{t('approvedImageHint')}</span>
           </div>
         </div>
-        {photo && <div className="photo-analysis-status"><p className="field-hint">{photoAnalyzing ? t('analyzingProductPhoto') : t('photoLookupPrivacy')}</p>
-          {photoAnalysisError && <div><p role="alert" className="error-message">{photoAnalysisError}</p><button type="button" className="text-button" disabled={photoAnalyzing} onClick={() => void analyzeProductPhoto(photo)}>{t('retryPhotoAnalysis')}</button></div>}
-          {photoSuggestion && !photoAnalyzing && <div><span>{t('photoAnalysisPrefilled')}</span><button type="button" className="text-button danger-text" onClick={() => void rejectCandidate({
-            source: 'ai',
-            sourceName: t('aiSource'),
-            suggestion: photoSuggestion,
-            sources: [],
-            imageUrl: photoPreview || null,
-            score: 0,
-          }, activeLookupKey || normalizeLookupKey(photoSuggestion.name))}>{t('notThisProduct')}</button></div>}
-        </div>}
         {error && <p role="alert" className="error-message">{error}</p>}
         {message && <p role="status" className="success-message">{message}</p>}
         <div className="form-footer"><p className="field-hint">{t('expiryOptionalHint')}</p><button className="primary-button" type="submit" disabled={busy || !clinicId}>{busy ? t('saving') : t('saveItem')}</button></div>

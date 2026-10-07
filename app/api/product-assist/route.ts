@@ -286,13 +286,6 @@ function parseJsonResponse(value: string): Record<string, unknown> {
   throw new Error('AI provider returned invalid JSON')
 }
 
-function readIdentity(data: Record<string, unknown>) {
-  return {
-    barcode: typeof data.barcode === 'string' ? data.barcode.slice(0, 128).trim() : '',
-    name: typeof data.product_name === 'string' ? data.product_name.slice(0, 160).trim() : '',
-  }
-}
-
 function readSuggestion(data: Record<string, unknown>, validSlugs: Set<string>): Suggestion | null {
   const name = typeof data.name === 'string' ? data.name.trim().slice(0, 160) : ''
   if (!name) return null
@@ -338,6 +331,17 @@ export async function POST(request: Request) {
   const barcode = String(form.get('barcode') ?? '').trim().slice(0, 128)
   const analyzePhoto = form.get('analyze_photo') === 'true'
   const image = form.get('image')
+  const hasImage = image instanceof File && image.size > 0
+  if (hasImage || analyzePhoto) {
+    const { data: isAdmin, error: adminError } = await supabase.rpc('is_admin')
+    if (adminError) {
+      console.error('Could not verify product image-analysis permission', adminError.message)
+      return jsonError('Image-analysis permission could not be verified.', 500)
+    }
+    if (!isAdmin) return jsonError('Product photo analysis is available to administrators only.', 403)
+    if (hasImage && !analyzePhoto) return jsonError('Set analyze_photo to true to analyze a product photo.', 400)
+    if (analyzePhoto && !hasImage) return jsonError('Choose a product photo to analyze.', 400)
+  }
   if (!query && !barcode && !(image instanceof File && image.size > 0)) {
     return jsonError('Enter a product name, barcode, or product photo.', 400)
   }
@@ -351,12 +355,7 @@ export async function POST(request: Request) {
   }
 
   let lookupTerms = [barcode, query]
-  let databaseResult = await searchCatalog(supabase, lookupTerms, barcode)
-  if (databaseResult.error) {
-    console.error('Product catalog search failed', databaseResult.error.message)
-    return jsonError('The product catalog could not be searched. Please try again.', 500)
-  }
-  if (databaseResult.match) return NextResponse.json({ source: 'catalog', product: databaseResult.match })
+  let databaseResult: Awaited<ReturnType<typeof searchCatalog>> = { error: null, match: null }
 
   const apiKey = process.env.NVIDIA_NIM_API_KEY
   const deepSeekApiKey = process.env.DEEPSEEK_API_KEY
@@ -448,59 +447,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ source: 'ai', suggestion, suggestions: [suggestion], sources: [] })
   }
 
-  let geminiImageSuggestion: Suggestion | null = null
-  if (imageDataUrl && !barcode && !query) {
-    let identity = { barcode: '', name: '' }
-    if (apiKey) {
-      try {
-        const content = await askModel(
-          apiKey,
-          'Inspect this dental product photo only to read a visible barcode and/or identify a short product name for a catalog lookup. Do not provide product details or guesses. Return JSON only: {"barcode":"","product_name":""}. Use empty strings when uncertain.',
-          imageDataUrl,
-        )
-        identity = readIdentity(parseJsonResponse(content))
-      } catch (error) {
-        console.error('NVIDIA NIM image identification failed', error instanceof Error ? error.message : 'Unknown error')
-      }
-    }
-
-    if (!identity.barcode && !identity.name && geminiApiKey) {
-      try {
-        const geminiContent = await askGemini(
-          geminiApiKey,
-          [
-            'Identify this dental or orthodontic product from its image for an inventory catalog.',
-            'Do not guess a barcode, brand, or product facts. Use an empty string when uncertain.',
-            'Return JSON only with keys: name, description, barcode, brand, product_type, model, color, category_slugs, presentation.',
-            'Use an empty category_slugs array; presentation must be individual, set, or box.',
-          ].join('\n'),
-          imageDataUrl,
-        )
-        const { data: categoryRows, error: categoriesError } = await supabase
-          .from('categories').select('slug').eq('is_active', true)
-        if (categoriesError) {
-          console.error('Product categories could not be loaded', categoriesError.message)
-          return jsonError('Product categories could not be loaded. Please try again.', 500)
-        }
-        const validSlugs = new Set((categoryRows ?? []).map((category) => category.slug))
-        geminiImageSuggestion = readSuggestion(parseJsonResponse(geminiContent), validSlugs)
-        if (geminiImageSuggestion) identity = { barcode: geminiImageSuggestion.barcode ?? '', name: geminiImageSuggestion.name }
-      } catch (error) {
-        console.error('Gemini image identification failed', error instanceof Error ? error.message : 'Unknown error')
-      }
-    }
-
-    if (!identity.barcode && !identity.name) {
-      return jsonError('The product photo could not be analyzed. Try entering or scanning its barcode.', 502)
-    }
-    lookupTerms = [identity.barcode, identity.name].filter(Boolean)
-    databaseResult = await searchCatalog(supabase, lookupTerms, identity.barcode)
-    if (databaseResult.error) {
-      console.error('Product catalog search failed', databaseResult.error.message)
-      return jsonError('The product catalog could not be searched. Please try again.', 500)
-    }
-    if (databaseResult.match) return NextResponse.json({ source: 'catalog', product: databaseResult.match })
+  databaseResult = await searchCatalog(supabase, lookupTerms, barcode)
+  if (databaseResult.error) {
+    console.error('Product catalog search failed', databaseResult.error.message)
+    return jsonError('The product catalog could not be searched. Please try again.', 500)
   }
+  if (databaseResult.match) return NextResponse.json({ source: 'catalog', product: databaseResult.match })
 
   const { data: categories, error: categoryError } = await supabase
     .from('categories').select('slug,name_en,name_es').eq('is_active', true).order('sort_order')
@@ -559,7 +511,7 @@ export async function POST(request: Request) {
       : Promise.resolve(null),
   ])
 
-  if (geminiApiKey && !geminiImageSuggestion && !modelSuggestions.suggestions.length) {
+  if (geminiApiKey && !modelSuggestions.suggestions.length) {
     const evidence = exaResult?.evidence ?? []
     const synthesisPrompt = [
       prompt,
@@ -583,9 +535,6 @@ export async function POST(request: Request) {
     }
   }
 
-  if (geminiImageSuggestion) {
-    return NextResponse.json({ source: 'ai', suggestion: geminiImageSuggestion, suggestions: [geminiImageSuggestion], sources: exaResult?.sources ?? [] })
-  }
   if (modelSuggestions.suggestions.length) {
     return NextResponse.json({ source: 'ai', suggestion: modelSuggestions.suggestions[0], suggestions: modelSuggestions.suggestions, sources: exaResult?.sources ?? [] })
   }
