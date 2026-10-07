@@ -32,16 +32,17 @@ type ProductCandidate =
   | { source: 'catalog'; product: CatalogProduct; imageUrl: string | null }
   | { source: 'ai'; suggestion: ProductSuggestion; sources?: { title: string; url: string }[] }
   | { source: 'exa'; suggestion: ProductSuggestion; sources: { title: string; url: string }[] }
-  | { source: 'pharmacy'; suggestion: ProductSuggestion; sources: { title: string; url: string }[]; imageUrl: string | null }
+  | { source: 'pharmacy'; pharmacy: string; suggestion: ProductSuggestion; sources: { title: string; url: string }[]; imageUrl: string | null; score: number }
 
 type PharmacyResult = {
-  pharmacy: 'Farmaciasaas' | 'Farmatodo'
+  pharmacy: 'Farmacia SAAS' | 'Farmatodo' | 'Farmaexpress' | 'FarmaGO' | 'TuZonaMarket' | 'Farmabien'
   productUrl: string
   found: boolean
   name: string | null
   description: string | null
   imageUrl: string | null
   brand?: string | null
+  score: number
 }
 
 export function AddInventoryForm() {
@@ -177,12 +178,13 @@ export function AddInventoryForm() {
         setLookupStep('pharmacy')
         try {
           const response = await fetch(`/api/pharmacy-search?barcode=${encodeURIComponent(inferredBarcode)}`)
-          const result = await response.json() as { error?: string; results?: PharmacyResult[] }
+          const result = await response.json() as { error?: string; results?: PharmacyResult[]; bestMatch?: PharmacyResult | null }
           if (response.ok) {
-            const pharmacyProduct = result.results?.find((item) => item.found && item.name)
+            const pharmacyProduct = result.bestMatch
             if (pharmacyProduct?.name) {
               setCandidate({
                 source: 'pharmacy',
+                pharmacy: pharmacyProduct.pharmacy,
                 suggestion: {
                   name: pharmacyProduct.name,
                   description: pharmacyProduct.description ?? '',
@@ -191,8 +193,11 @@ export function AddInventoryForm() {
                   category_slugs: [],
                   presentation: 'individual',
                 },
-                sources: [{ title: pharmacyProduct.pharmacy, url: pharmacyProduct.productUrl }],
+                sources: (result.results ?? [])
+                  .filter((item) => item.found && item.name)
+                  .map((item) => ({ title: item.pharmacy, url: item.productUrl })),
                 imageUrl: pharmacyProduct.imageUrl,
+                score: pharmacyProduct.score,
               })
               return
             }
@@ -406,7 +411,9 @@ export function AddInventoryForm() {
       {candidate && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setCandidate(null) }}>
         <section role="dialog" aria-modal="true" aria-labelledby="product-candidate-title" className="item-dialog card product-candidate-dialog">
           <h2 id="product-candidate-title">{t('confirmProduct')}</h2>
-          <p className="subtle">{t(candidate.source === 'catalog' ? 'catalogVerifiedProduct' : candidate.source === 'pharmacy' ? 'pharmacyProductVerified' : candidate.source === 'exa' ? 'exaSuggestionDisclaimer' : 'aiSuggestionDisclaimer')}</p>
+          <p className="subtle">{candidate.source === 'pharmacy'
+            ? t('pharmacyProductVerified', { pharmacy: candidate.pharmacy, score: candidate.score })
+            : t(candidate.source === 'catalog' ? 'catalogVerifiedProduct' : candidate.source === 'exa' ? 'exaSuggestionDisclaimer' : 'aiSuggestionDisclaimer')}</p>
           {candidate.source === 'catalog' && (candidate.imageUrl || photoPreview) && <img className="detail-image" src={candidate.imageUrl || photoPreview} alt={candidate.imageUrl ? candidate.product.name : t('uploadedProductPhoto')} onError={() => {
             if (candidate.imageUrl) setCandidate({ ...candidate, imageUrl: null })
           }} />}
