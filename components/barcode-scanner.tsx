@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { BrowserMultiFormatReader, type IScannerControls } from '@zxing/browser'
+import { BarcodeFormat, BrowserMultiFormatReader, type IScannerControls } from '@zxing/browser'
 import { useTranslations } from 'next-intl'
 import { XIcon } from '@/components/icons'
 
@@ -25,6 +25,16 @@ export function BarcodeScanner({ onDetected, onClose }: BarcodeScannerProps) {
     let active = true
     let controls: IScannerControls | undefined
     const reader = new BrowserMultiFormatReader()
+    reader.possibleFormats = [
+      BarcodeFormat.QR_CODE,
+      BarcodeFormat.DATA_MATRIX,
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A,
+      BarcodeFormat.UPC_E,
+    ]
 
     void reader.decodeFromConstraints({ video: { facingMode: { ideal: 'environment' } }, audio: false }, video, (result, _decodeError, scanningControls) => {
       controls = scanningControls
