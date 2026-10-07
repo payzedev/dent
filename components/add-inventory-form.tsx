@@ -32,13 +32,16 @@ type ProductCandidate =
   | { source: 'catalog'; product: CatalogProduct; imageUrl: string | null }
   | { source: 'ai'; suggestion: ProductSuggestion; sources?: { title: string; url: string }[] }
   | { source: 'exa'; suggestion: ProductSuggestion; sources: { title: string; url: string }[] }
+  | { source: 'pharmacy'; suggestion: ProductSuggestion; sources: { title: string; url: string }[]; imageUrl: string | null }
 
 type PharmacyResult = {
   pharmacy: 'Farmaciasaas' | 'Farmatodo'
   productUrl: string
+  found: boolean
   name: string | null
   description: string | null
   imageUrl: string | null
+  brand?: string | null
 }
 
 export function AddInventoryForm() {
@@ -60,9 +63,8 @@ export function AddInventoryForm() {
   const [aiPrefill, setAiPrefill] = useState<ProductSuggestion | null>(null)
   const [lookupBusy, setLookupBusy] = useState(false)
   const [lookupError, setLookupError] = useState('')
-  const [pharmacyResults, setPharmacyResults] = useState<PharmacyResult[]>([])
-  const [pharmacyBusy, setPharmacyBusy] = useState(false)
-  const [pharmacyError, setPharmacyError] = useState('')
+  const [lookupStep, setLookupStep] = useState<'catalog' | 'pharmacy' | 'ai' | null>(null)
+  const [catalogImageUrls, setCatalogImageUrls] = useState<Record<string, string>>({})
   const [photoPreview, setPhotoPreview] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
@@ -112,7 +114,18 @@ export function AddInventoryForm() {
       const { data, error: searchError } = await supabase.rpc('search_catalog', { search_term: term, result_limit: 8 })
       if (cancelled) return
       if (searchError) { setError(searchError.message); return }
-      setResults((data ?? []) as CatalogProduct[])
+      const products = (data ?? []) as CatalogProduct[]
+      setResults(products)
+      const imageEntries = await Promise.all(products.flatMap((product) => product.approved_image_path
+        ? [supabase.storage.from('inventory-images').createSignedUrl(product.approved_image_path, 3600).then(({ data: image, error: imageError }) => {
+          if (imageError) {
+            console.error('Could not load a shared catalog product photo', imageError.message)
+            return [product.id, ''] as const
+          }
+          return [product.id, image.signedUrl] as const
+        })]
+        : []))
+      if (!cancelled) setCatalogImageUrls(Object.fromEntries(imageEntries))
     }, 250)
     return () => { cancelled = true; window.clearTimeout(timer) }
   }, [query, product, supabase])
@@ -139,12 +152,63 @@ export function AddInventoryForm() {
     setLookupBusy(true)
     setLookupError('')
     setCandidate(null)
-    const form = new FormData()
-    form.set('query', barcode.trim() ? '' : query.trim())
-    form.set('barcode', barcode.trim())
-    if (photo) form.set('image', photo)
-
+    const searchTerm = barcode.trim() || query.trim()
+    const inferredBarcode = barcode.trim() || (/^\d{8,14}$/.test(query.trim()) ? query.trim() : '')
     try {
+      setLookupStep('catalog')
+      if (searchTerm) {
+        const { data, error: catalogError } = await supabase.rpc('search_catalog', { search_term: searchTerm, result_limit: 8 })
+        if (catalogError) throw new Error(catalogError.message)
+        const products = (data ?? []) as CatalogProduct[]
+        const match = products.find((item) => barcode.trim() && item.barcode?.trim() === barcode.trim()) ?? products[0]
+        if (match) {
+          let imageUrl: string | null = catalogImageUrls[match.id] || null
+          if (match.approved_image_path && !imageUrl) {
+            const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(match.approved_image_path, 3600)
+            if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
+            else imageUrl = image.signedUrl
+          }
+          setCandidate({ source: 'catalog', product: match, imageUrl })
+          return
+        }
+      }
+
+      if (/^[\da-zA-Z-]{1,128}$/.test(inferredBarcode)) {
+        setLookupStep('pharmacy')
+        try {
+          const response = await fetch(`/api/pharmacy-search?barcode=${encodeURIComponent(inferredBarcode)}`)
+          const result = await response.json() as { error?: string; results?: PharmacyResult[] }
+          if (response.ok) {
+            const pharmacyProduct = result.results?.find((item) => item.found && item.name)
+            if (pharmacyProduct?.name) {
+              setCandidate({
+                source: 'pharmacy',
+                suggestion: {
+                  name: pharmacyProduct.name,
+                  description: pharmacyProduct.description ?? '',
+                  barcode: inferredBarcode,
+                  brand: pharmacyProduct.brand ?? null,
+                  category_slugs: [],
+                  presentation: 'individual',
+                },
+                sources: [{ title: pharmacyProduct.pharmacy, url: pharmacyProduct.productUrl }],
+                imageUrl: pharmacyProduct.imageUrl,
+              })
+              return
+            }
+          } else {
+            console.error('Pharmacy catalog search failed', result.error || response.statusText)
+          }
+        } catch (error) {
+          console.error('Pharmacy catalog search failed', error instanceof Error ? error.message : 'Unknown error')
+        }
+      }
+
+      setLookupStep('ai')
+      const form = new FormData()
+      form.set('query', inferredBarcode ? '' : query.trim())
+      form.set('barcode', inferredBarcode)
+      if (photo) form.set('image', photo)
       const response = await fetch('/api/product-assist', { method: 'POST', body: form })
       const result = await response.json() as {
         error?: string
@@ -154,19 +218,15 @@ export function AddInventoryForm() {
         sources?: { title: string; url: string }[]
       }
       if (!response.ok) {
-        setLookupError(result.error || t('productLookupFailed'))
-        return
+        throw new Error(result.error || t('productLookupFailed'))
       }
       if (result.source === 'catalog' && result.product) {
         const imagePath = result.product.approved_image_path
         let imageUrl: string | null = null
         if (imagePath) {
-          const { data, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(imagePath, 3600)
-          if (imageError) {
-            setLookupError(imageError.message)
-            return
-          }
-          imageUrl = data.signedUrl
+          const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(imagePath, 3600)
+          if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
+          else imageUrl = image.signedUrl
         }
         setCandidate({ source: 'catalog', product: result.product, imageUrl })
         return
@@ -179,51 +239,13 @@ export function AddInventoryForm() {
         setCandidate({ source: 'exa', suggestion: result.suggestion, sources: result.sources ?? [] })
         return
       }
-      setLookupError(t('productLookupFailed'))
+      throw new Error(t('productLookupFailed'))
     } catch (error) {
       setLookupError(error instanceof Error ? error.message : t('productLookupFailed'))
     } finally {
       setLookupBusy(false)
+      setLookupStep(null)
     }
-  }
-
-  async function searchPharmacies() {
-    const searchBarcode = barcode.trim() || query.trim()
-    if (!/^[\da-zA-Z-]{1,128}$/.test(searchBarcode)) {
-      setPharmacyError(t('pharmacyBarcodeRequired'))
-      return
-    }
-    setPharmacyBusy(true)
-    setPharmacyError('')
-    setPharmacyResults([])
-    try {
-      const response = await fetch(`/api/pharmacy-search?barcode=${encodeURIComponent(searchBarcode)}`)
-      const result = await response.json() as { error?: string; results?: PharmacyResult[]; failedPharmacies?: string[] }
-      if (!response.ok) {
-        setPharmacyError(result.error || t('pharmacyLookupFailed'))
-        return
-      }
-      setPharmacyResults(result.results ?? [])
-      if (result.failedPharmacies?.length) setPharmacyError(t('pharmacyLookupFailed'))
-    } catch (error) {
-      setPharmacyError(error instanceof Error ? error.message : t('pharmacyLookupFailed'))
-    } finally {
-      setPharmacyBusy(false)
-    }
-  }
-
-  function applyPharmacyResult(result: PharmacyResult) {
-    if (!result.name) return
-    setProduct(null)
-    setAiPrefill({
-      name: result.name,
-      description: result.description ?? '',
-      barcode: barcode.trim() || query.trim(),
-      brand: null,
-      category_slugs: [],
-      presentation: 'individual',
-    })
-    setQuery(result.name)
   }
 
   function selectPhoto(event: React.ChangeEvent<HTMLInputElement>) {
@@ -237,9 +259,6 @@ export function AddInventoryForm() {
     setError('')
     setPhoto(file)
   }
-
-  const pharmacySearchTerm = barcode.trim() || query.trim()
-  const canSearchPharmacies = /^[\da-zA-Z-]{1,128}$/.test(pharmacySearchTerm)
 
   function acceptCandidate() {
     if (!candidate) return
@@ -357,20 +376,11 @@ export function AddInventoryForm() {
         <div className="catalog-search">
           <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setCategoryIds([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
           <p className="field-hint">{t('catalogLookupHint')}</p>
-          {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></button></li>)}</ul>}
-          {(query.trim().length >= 2 || barcode.trim() || photo) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t('searchingWithAi') : t('searchCatalogAndAi')}</button>}
+          {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}>{catalogImageUrls[result.id] ? <img src={catalogImageUrls[result.id]} alt="" onError={() => setCatalogImageUrls((current) => ({ ...current, [result.id]: '' }))} /> : <span className="catalog-result-image" aria-hidden="true">✳</span>}<span className="catalog-result-copy"><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></span></button></li>)}</ul>}
+          {(query.trim().length >= 2 || barcode.trim() || photo) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t(lookupStep === 'catalog' ? 'searchingCatalog' : lookupStep === 'pharmacy' ? 'searchingPharmacies' : 'searchingWithAi') : t('searchCatalogPharmacyAi')}</button>}
           {lookupError && <p role="alert" className="error-message">{lookupError}</p>}
-          <button type="button" className="secondary-button pharmacy-search-button" disabled={pharmacyBusy || !canSearchPharmacies} onClick={() => void searchPharmacies()}>{pharmacyBusy ? t('searchingPharmacies') : t('pharmacySearch')}</button>
-          {pharmacyError && <p role="alert" className="error-message">{pharmacyError}</p>}
-          {pharmacyResults.length > 0 && <div className="pharmacy-results" aria-live="polite">{pharmacyResults.map((result) => <article className="pharmacy-result card" key={result.pharmacy}>
-            {result.imageUrl && <img src={result.imageUrl} alt={result.name || t('productImage')} />}
-            <div><h3>{result.name || result.pharmacy}</h3>{result.description && <p>{result.description}</p>}
-              <a href={result.productUrl} target="_blank" rel="noreferrer">{t('viewPharmacyProduct')}</a>
-              {result.name && <button type="button" className="text-button" onClick={() => applyPharmacyResult(result)}>{t('usePharmacyDetails')}</button>}
-            </div>
-          </article>)}</div>}
         </div>
-        {product && <p className="catalog-selected" role="status">{t('catalogProductSelected', { name: product.name })}<button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]) }}>{t('clear')}</button></p>}
+        {product && <div className="catalog-selected" role="status">{catalogImageUrls[product.id] && <img src={catalogImageUrls[product.id]} alt={product.name} onError={() => setCatalogImageUrls((current) => ({ ...current, [product.id]: '' }))} />}<span>{t('catalogProductSelected', { name: product.name })}</span><button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]) }}>{t('clear')}</button></div>}
         <div className="form-grid">
           <label>{t('name')}<input name="name" required maxLength={160} defaultValue={product?.name ?? aiPrefill?.name ?? ''} key={`name-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
           <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null) }} placeholder={t('barcodePlaceholder')} /></label>
@@ -396,9 +406,12 @@ export function AddInventoryForm() {
       {candidate && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setCandidate(null) }}>
         <section role="dialog" aria-modal="true" aria-labelledby="product-candidate-title" className="item-dialog card product-candidate-dialog">
           <h2 id="product-candidate-title">{t('confirmProduct')}</h2>
-          <p className="subtle">{t(candidate.source === 'catalog' ? 'catalogVerifiedProduct' : candidate.source === 'exa' ? 'exaSuggestionDisclaimer' : 'aiSuggestionDisclaimer')}</p>
-          {candidate.source === 'catalog' && (candidate.imageUrl || photoPreview) && <img className="detail-image" src={candidate.imageUrl || photoPreview} alt={candidate.imageUrl ? candidate.product.name : t('uploadedProductPhoto')} />}
-          {candidate.source !== 'catalog' && photoPreview && <img className="detail-image" src={photoPreview} alt={t('uploadedProductPhoto')} />}
+          <p className="subtle">{t(candidate.source === 'catalog' ? 'catalogVerifiedProduct' : candidate.source === 'pharmacy' ? 'pharmacyProductVerified' : candidate.source === 'exa' ? 'exaSuggestionDisclaimer' : 'aiSuggestionDisclaimer')}</p>
+          {candidate.source === 'catalog' && (candidate.imageUrl || photoPreview) && <img className="detail-image" src={candidate.imageUrl || photoPreview} alt={candidate.imageUrl ? candidate.product.name : t('uploadedProductPhoto')} onError={() => {
+            if (candidate.imageUrl) setCandidate({ ...candidate, imageUrl: null })
+          }} />}
+          {candidate.source === 'pharmacy' && candidate.imageUrl && <img className="detail-image" src={candidate.imageUrl} alt={candidate.suggestion.name} onError={() => setCandidate({ ...candidate, imageUrl: null })} />}
+          {candidate.source !== 'catalog' && candidate.source !== 'pharmacy' && photoPreview && <img className="detail-image" src={photoPreview} alt={t('uploadedProductPhoto')} />}
           <dl className="detail-list">
             <div><dt>{t('name')}</dt><dd>{candidate.source === 'catalog' ? candidate.product.name : candidate.suggestion.name}</dd></div>
             <div><dt>{t('barcode')}</dt><dd>{(candidate.source === 'catalog' ? candidate.product.barcode : candidate.suggestion.barcode) || t('notProvided')}</dd></div>

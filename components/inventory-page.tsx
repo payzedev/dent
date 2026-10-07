@@ -95,16 +95,26 @@ export function InventoryPage() {
     }
     const productList = (productRows ?? []) as Product[]
     setProducts(productList)
-    const paths = [...new Set(inventory.map((item) => item.image_path || productList.find((product) => product.id === item.product_id)?.approved_image_path).filter((path): path is string => Boolean(path)))]
+    const paths = [...new Set(inventory.flatMap((item) => [
+      item.image_path,
+      productList.find((product) => product.id === item.product_id)?.approved_image_path ?? null,
+    ]).filter((path): path is string => Boolean(path)))]
     const signedImages = await Promise.all(paths.map(async (path) => {
       const { data, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(path, 3600)
       if (imageError) {
-        setError(imageError.message)
+        console.error('Could not load an inventory or shared catalog photo', imageError.message)
         return [path, ''] as const
       }
       return [path, data.signedUrl] as const
     }))
-    setImages(Object.fromEntries(signedImages))
+    const imageMap = Object.fromEntries(signedImages)
+    const itemWithoutPhoto = inventory.find((item) => {
+      const productImage = productList.find((product) => product.id === item.product_id)?.approved_image_path
+      return !imageMap[item.image_path ?? ''] && !imageMap[productImage ?? '']
+        && Boolean(item.image_path || productImage)
+    })
+    if (itemWithoutPhoto) setError(t('productPhotoUnavailable', { name: itemWithoutPhoto.name }))
+    setImages(imageMap)
   }, [supabase, t])
 
   useEffect(() => { void load() }, [load])
@@ -231,9 +241,10 @@ export function InventoryPage() {
       {visibleItems.length ? <div className="inventory-grid">{visibleItems.map((item) => {
         const product = products.find((value) => value.id === item.product_id)
         const path = item.image_path || product?.approved_image_path
-        const image = path ? images[path] : ''
+        const imagePath = item.image_path && images[item.image_path] ? item.image_path : product?.approved_image_path && images[product.approved_image_path] ? product.approved_image_path : path
+        const image = imagePath ? images[imagePath] : ''
         return <button key={item.id} type="button" className="inventory-card card" onClick={() => setSelected(item)}>
-          <span className="inventory-image">{image ? <img src={image} alt="" /> : <span aria-hidden="true">✳</span>}</span>
+          <span className="inventory-image">{image && imagePath ? <img src={image} alt="" onError={() => setImages((current) => ({ ...current, [imagePath]: '' }))} /> : <span aria-hidden="true">✳</span>}</span>
           <span className="inventory-card-copy"><strong>{item.name}</strong><span>{categoryNames(item.category_ids)}</span><span>{t('quantityPresentation', { count: item.quantity, presentation: t(item.presentation) })}</span></span>
           <span className={`status-badge status-${item.status}`}>{t(item.status)}</span>
         </button>
@@ -247,7 +258,9 @@ export function InventoryPage() {
           {(() => {
             const product = products.find((value) => value.id === selected.product_id)
             const path = selected.image_path || product?.approved_image_path
-            return path && images[path] ? <img className="detail-image" src={images[path]} alt={selected.name} /> : null
+            const imagePath = selected.image_path && images[selected.image_path] ? selected.image_path : product?.approved_image_path && images[product.approved_image_path] ? product.approved_image_path : path
+            const imageUrl = imagePath ? images[imagePath] : ''
+            return imageUrl && imagePath ? <img className="detail-image" src={imageUrl} alt={selected.name} onError={() => setImages((current) => ({ ...current, [imagePath]: '' }))} /> : null
           })()}
           <dl className="detail-list">
             <div><dt>{t('description')}</dt><dd>{selected.description || t('notProvided')}</dd></div>

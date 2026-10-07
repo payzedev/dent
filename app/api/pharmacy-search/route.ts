@@ -6,41 +6,32 @@ export const runtime = 'nodejs'
 type PharmacyResult = {
   pharmacy: 'Farmaciasaas' | 'Farmatodo'
   productUrl: string
+  found: boolean
   name: string | null
   description: string | null
   imageUrl: string | null
+  brand?: string | null
 }
 
-function decodeHtml(value: string) {
-  return value
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([\da-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
+type StoreProduct = {
+  productName?: string
+  name?: string
+  description?: string
+  link?: string
+  linkText?: string
+  brand?: string
+  items?: Array<{
+    ean?: string
+    referenceId?: Array<{ Value?: string }>
+    images?: Array<{ imageUrl?: string }>
+  }>
 }
 
-function readMeta(html: string, key: string) {
-  const tags = html.match(/<meta\b[^>]*>/gi) ?? []
-  for (const tag of tags) {
-    const attrs = new Map<string, string>()
-    for (const match of tag.matchAll(/([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/g)) {
-      attrs.set(match[1].toLowerCase(), decodeHtml(match[2] ?? match[3] ?? match[4] ?? ''))
-    }
-    if (attrs.get('property')?.toLowerCase() === key || attrs.get('name')?.toLowerCase() === key) {
-      return attrs.get('content')?.trim() || null
-    }
-  }
-  return null
-}
-
-function readJsonLd(html: string) {
+function readJsonLd(html: string, barcode: string) {
   const scripts = html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)
   for (const script of scripts) {
     try {
-      const value: unknown = JSON.parse(script[1].replace(/&quot;/g, '"'))
+      const value: unknown = JSON.parse(script[1])
       const pending: unknown[] = Array.isArray(value) ? [...value] : [value]
       while (pending.length) {
         const current = pending.shift()
@@ -51,12 +42,27 @@ function readJsonLd(html: string) {
         }
         const record = current as Record<string, unknown>
         const type = record['@type']
-        if (type === 'Product' || (Array.isArray(type) && type.includes('Product'))) return record
+        const isProduct = type === 'Product' || (Array.isArray(type) && type.includes('Product'))
+        const identifiers = [record.gtin, record.gtin8, record.gtin12, record.gtin13, record.gtin14, record.sku]
+        const matchingOffer = record.offers && typeof record.offers === 'object' && !Array.isArray(record.offers)
+          ? (record.offers as Record<string, unknown>)
+          : null
+        if (isProduct && [...identifiers, matchingOffer?.gtin, matchingOffer?.sku].some((value) => String(value ?? '') === barcode)) return record
         if (record['@graph']) pending.push(record['@graph'])
       }
     } catch {
       continue
     }
+  }
+  return null
+}
+
+function findStoreProduct(value: unknown, barcode: string): StoreProduct | null {
+  if (!Array.isArray(value)) return null
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const product = entry as StoreProduct
+    if (product.items?.some((item) => item.ean?.trim() === barcode)) return product
   }
   return null
 }
@@ -72,25 +78,65 @@ function absoluteImageUrl(value: unknown, baseUrl: string) {
   }
 }
 
-async function searchPharmacy(pharmacy: PharmacyResult['pharmacy'], productUrl: string): Promise<PharmacyResult> {
-  const response = await fetch(productUrl, {
+async function searchPharmacy(
+  pharmacy: PharmacyResult['pharmacy'],
+  barcode: string,
+  searchUrl: string,
+): Promise<PharmacyResult> {
+  const origin = new URL(searchUrl).origin
+  const apiUrls = [
+    `${origin}/api/catalog_system/pub/products/search?ft=${encodeURIComponent(barcode)}&_from=0&_to=9`,
+    `${origin}/api/catalog_system/pub/products/search?fq=alternateIds_Ean:${encodeURIComponent(barcode)}&_from=0&_to=9`,
+  ]
+  for (const apiUrl of apiUrls) {
+    try {
+      const response = await fetch(apiUrl, {
+        headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 DentaStock product lookup' },
+        signal: AbortSignal.timeout(8_000),
+        cache: 'no-store',
+      })
+      if (!response.ok) continue
+      const products: unknown = await response.json()
+      const match = findStoreProduct(products, barcode)
+      if (!match) continue
+      const item = match.items?.find((entry) => entry.ean?.trim() === barcode)
+      const productUrl = match.link
+        ? new URL(match.link, origin).toString()
+        : new URL(match.linkText ?? '', origin).toString()
+      return {
+        pharmacy,
+        productUrl,
+        found: true,
+        name: match.productName || match.name || null,
+        description: match.description || null,
+        imageUrl: absoluteImageUrl(item?.images?.[0]?.imageUrl, origin),
+        brand: match.brand || null,
+      }
+    } catch (error) {
+      console.error(`${pharmacy} product API request failed`, error instanceof Error ? error.message : 'Unknown error')
+    }
+  }
+
+  const response = await fetch(searchUrl, {
     headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'Mozilla/5.0 DentaStock product lookup' },
-    signal: AbortSignal.timeout(12_000),
+    signal: AbortSignal.timeout(8_000),
     cache: 'no-store',
   })
   if (!response.ok) throw new Error(`${pharmacy} responded with status ${response.status}`)
-
   const html = await response.text()
-  const jsonLd = readJsonLd(html)
-  const jsonName = typeof jsonLd?.name === 'string' ? jsonLd.name : null
-  const jsonDescription = typeof jsonLd?.description === 'string' ? jsonLd.description : null
-  return {
-    pharmacy,
-    productUrl,
-    name: jsonName || readMeta(html, 'og:title') || readMeta(html, 'twitter:title'),
-    description: jsonDescription || readMeta(html, 'og:description') || readMeta(html, 'description'),
-    imageUrl: absoluteImageUrl(jsonLd?.image, productUrl) || absoluteImageUrl(readMeta(html, 'og:image'), productUrl),
+  const jsonLd = readJsonLd(html, barcode)
+  if (jsonLd) {
+    const image = jsonLd.image
+    return {
+      pharmacy,
+      productUrl: typeof jsonLd.url === 'string' ? new URL(jsonLd.url, origin).toString() : searchUrl,
+      found: true,
+      name: typeof jsonLd.name === 'string' ? jsonLd.name : null,
+      description: typeof jsonLd.description === 'string' ? jsonLd.description : null,
+      imageUrl: absoluteImageUrl(image, origin),
+    }
   }
+  return { pharmacy, productUrl: searchUrl, found: false, name: null, description: null, imageUrl: null }
 }
 
 export async function GET(request: Request) {
@@ -112,8 +158,8 @@ export async function GET(request: Request) {
   farmatodoUrl.searchParams.set('filtros', '')
 
   const pharmacies = await Promise.allSettled([
-    searchPharmacy('Farmaciasaas', farmaciasaasUrl.toString()),
-    searchPharmacy('Farmatodo', farmatodoUrl.toString()),
+    searchPharmacy('Farmaciasaas', barcode, farmaciasaasUrl.toString()),
+    searchPharmacy('Farmatodo', barcode, farmatodoUrl.toString()),
   ])
   const results: PharmacyResult[] = []
   const failures: string[] = []
@@ -124,7 +170,7 @@ export async function GET(request: Request) {
       const productUrl = index === 0 ? farmaciasaasUrl.toString() : farmatodoUrl.toString()
       console.error(`${pharmacy} product search failed`, result.reason instanceof Error ? result.reason.message : 'Unknown error')
       failures.push(pharmacy)
-      results.push({ pharmacy, productUrl, name: null, description: null, imageUrl: null })
+      results.push({ pharmacy, productUrl, found: false, name: null, description: null, imageUrl: null })
     }
   }
   return NextResponse.json({ results, failedPharmacies: failures })

@@ -84,6 +84,13 @@ label{display:grid;gap:7px;color:var(--ink);font-size:13px;font-weight:650}
 .catalog-results button{display:flex;flex-direction:column;align-items:flex-start;width:100%;gap:3px;border:0;border-radius:8px;background:#fff;padding:10px 12px;text-align:left;color:var(--ink)}
 .catalog-results button:hover{background:#F4F7FC}
 .catalog-results button span{font-size:12px;color:var(--muted)}
+.catalog-results button{display:grid;grid-template-columns:40px minmax(0,1fr);align-items:center}
+.catalog-results button>img,.catalog-result-image{display:grid;place-items:center;width:40px;height:40px;object-fit:contain;border-radius:7px;background:#F2F5FA;color:#9AA8BB}
+.catalog-results button .catalog-result-copy{display:grid;gap:3px;min-width:0}
+.catalog-results .catalog-result-copy strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.catalog-selected{display:flex;align-items:center;gap:10px}
+.catalog-selected img{width:48px;height:48px;object-fit:contain;border:1px solid var(--border);border-radius:8px}
+.catalog-selected .text-button{margin-left:auto}
 .catalog-selected{display:flex;justify-content:space-between;align-items:center;gap:10px;border-radius:9px;background:#EDF5FD;padding:10px 12px;color:#446B93;font-size:13px}
 .password-control{position:relative;display:block}
 .password-control input{padding-right:84px}
@@ -205,13 +212,6 @@ td .text-button{padding-left:0}
 .support-unread-badge{position:absolute;top:-8px;right:-12px;min-width:17px;height:17px;padding:0 4px;border:2px solid #fff;border-radius:999px;background:#D96A76;color:#fff;font-size:9px;line-height:13px;text-align:center;font-weight:750}
 .photo-picker{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .photo-picker .field-hint{grid-column:1/-1}
-.pharmacy-search-button{margin-top:8px}
-.pharmacy-results{display:grid;gap:10px;margin-top:12px}
-.pharmacy-result{display:grid;grid-template-columns:96px minmax(0,1fr);gap:14px;padding:12px;border-radius:12px}
-.pharmacy-result img{width:96px;height:96px;object-fit:contain;border:1px solid var(--border);border-radius:8px;background:#fff}
-.pharmacy-result h3{margin:0 0 4px;font-size:15px}
-.pharmacy-result p{margin:0 0 7px;color:var(--muted);font-size:13px}
-.pharmacy-result a,.pharmacy-result .text-button{display:inline-block;margin:4px 12px 0 0;color:var(--primary);font-size:12px;font-weight:700}
 .admin-ai-tools{display:grid;justify-items:start;gap:7px;margin-top:14px}
 .admin-ai-tools .error-message{margin:0}
 .clinic-review-list{display:grid;gap:14px}
@@ -219,6 +219,4 @@ td .text-button{padding-left:0}
 @media(max-width:540px){
   .photo-picker{grid-template-columns:1fr}
   .photo-picker .field-hint{grid-column:auto}
-  .pharmacy-result{grid-template-columns:72px minmax(0,1fr);gap:10px}
-  .pharmacy-result img{width:72px;height:72px}
 }
