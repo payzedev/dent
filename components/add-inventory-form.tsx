@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase/client'
@@ -8,7 +8,7 @@ import { BarcodeScanner } from '@/components/barcode-scanner'
 import { ScanIcon, SearchIcon } from '@/components/icons'
 
 type Category = { id: string; slug: string; name_en: string; name_es: string }
-type Brand = { id: string; name: string }
+type Brand = { id: string; name: string; clinic_id: string | null }
 type CatalogProduct = {
   id: string
   name: string
@@ -19,12 +19,18 @@ type CatalogProduct = {
   brand_id: string | null
   approved_image_path: string | null
   presentation: 'individual' | 'set' | 'box'
+  product_type?: string
+  model?: string
+  color?: string
 }
 type ProductSuggestion = {
   name: string
   description: string
   barcode: string | null
   brand: string | null
+  product_type: string
+  model: string
+  color: string
   category_slugs: string[]
   presentation: 'individual' | 'set' | 'box'
 }
@@ -44,6 +50,16 @@ type PharmacyResult = {
 }
 type StoreResult = { store: string; name: string; url: string; description: string; imageUrl: string | null; score: number }
 
+function normalizeLookupKey(value: string) {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().replace(/\s+/g, ' ').trim().slice(0, 160)
+}
+
+function candidateKey(candidate: ProductCandidate) {
+  if (candidate.source === 'catalog') return `catalog:${candidate.product.id}`
+  return `${candidate.source}:${normalizeLookupKey(candidate.suggestion.name)}`
+    .toLocaleLowerCase().slice(0, 500)
+}
+
 export function AddInventoryForm() {
   const t = useTranslations()
   const locale = useLocale()
@@ -53,9 +69,13 @@ export function AddInventoryForm() {
   const [userId, setUserId] = useState('')
   const [categories, setCategories] = useState<Category[]>([])
   const [brands, setBrands] = useState<Brand[]>([])
+  const [brandId, setBrandId] = useState('')
+  const [newBrandName, setNewBrandName] = useState('')
+  const [brandBusy, setBrandBusy] = useState(false)
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<CatalogProduct[]>([])
   const [product, setProduct] = useState<CatalogProduct | null>(null)
+  const [prefillVersion, setPrefillVersion] = useState(0)
   const [categoryIds, setCategoryIds] = useState<string[]>([])
   const [barcode, setBarcode] = useState('')
   const [scannerOpen, setScannerOpen] = useState(false)
@@ -67,9 +87,14 @@ export function AddInventoryForm() {
   const [catalogImageUrls, setCatalogImageUrls] = useState<Record<string, string>>({})
   const [photoPreview, setPhotoPreview] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
+  const [photoAnalyzing, setPhotoAnalyzing] = useState(false)
+  const [photoAnalysisError, setPhotoAnalysisError] = useState('')
+  const [photoSuggestion, setPhotoSuggestion] = useState<ProductSuggestion | null>(null)
+  const [activeLookupKey, setActiveLookupKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [message, setMessage] = useState('')
+  const photoAnalysisGeneration = useRef(0)
 
   useEffect(() => {
     let cancelled = false
@@ -77,7 +102,7 @@ export function AddInventoryForm() {
       const [{ data: { user }, error: authError }, { data: categoryRows, error: categoryError }, { data: brandRows, error: brandError }] = await Promise.all([
         supabase.auth.getUser(),
         supabase.from('categories').select('id,slug,name_en,name_es').eq('is_active', true).order('sort_order'),
-        supabase.from('brands').select('id,name').order('name'),
+        supabase.from('brands').select('id,name,clinic_id').order('name'),
       ])
       if (cancelled) return
       const failure = authError || categoryError || brandError
@@ -116,25 +141,22 @@ export function AddInventoryForm() {
       if (searchError) { setError(searchError.message); return }
       const products = (data ?? []) as CatalogProduct[]
       setResults(products)
-      const imageEntries = await Promise.all(products.flatMap((product) => product.approved_image_path
-        ? [supabase.storage.from('inventory-images').createSignedUrl(product.approved_image_path, 3600).then(({ data: image, error: imageError }) => {
-          if (imageError) {
-            console.error('Could not load a shared catalog product photo', imageError.message)
-            return [product.id, ''] as const
-          }
-          return [product.id, image.signedUrl] as const
-        })]
-        : []))
+      const imageEntries = products.flatMap((product) => product.approved_image_path
+        ? [[product.id, `/api/inventory-image?path=${encodeURIComponent(product.approved_image_path)}&user=${encodeURIComponent(userId)}`] as const]
+        : [])
       if (!cancelled) setCatalogImageUrls(Object.fromEntries(imageEntries))
     }, 250)
     return () => { cancelled = true; window.clearTimeout(timer) }
-  }, [query, product, supabase])
+  }, [query, product, supabase, userId])
 
   function chooseProduct(value: CatalogProduct) {
+    setPrefillVersion((version) => version + 1)
     setProduct(value)
     setAiPrefill(null)
     setQuery(value.name)
     setBarcode(value.barcode ?? '')
+    setBrandId(value.brand_id ?? '')
+    setNewBrandName('')
     setCategoryIds(value.category_ids?.length ? value.category_ids : value.category_id ? [value.category_id] : [])
     setResults([])
   }
@@ -148,12 +170,74 @@ export function AddInventoryForm() {
     setScannerOpen(false)
   }, [])
 
+  async function analyzeProductPhoto(file: File) {
+    const generation = ++photoAnalysisGeneration.current
+    setPhotoAnalyzing(true)
+    setPhotoAnalysisError('')
+    setPhotoSuggestion(null)
+    const form = new FormData()
+    form.set('query', query.trim())
+    form.set('barcode', barcode.trim())
+    form.set('image', file)
+    form.set('analyze_photo', 'true')
+    try {
+      const response = await fetch('/api/product-assist', { method: 'POST', body: form })
+      const result = await response.json() as { error?: string; suggestion?: ProductSuggestion; suggestions?: ProductSuggestion[] }
+      if (!response.ok) throw new Error(result.error || t('photoAnalysisFailed'))
+      const suggestion = result.suggestion ?? result.suggestions?.[0]
+      if (!suggestion?.name) throw new Error(t('photoAnalysisFailed'))
+      if (generation !== photoAnalysisGeneration.current) return
+      setProduct(null)
+      setAiPrefill(suggestion)
+      setPrefillVersion((version) => version + 1)
+      setPhotoSuggestion(suggestion)
+      setQuery(suggestion.name)
+      setBarcode(suggestion.barcode ?? barcode.trim())
+      setCategoryIds(suggestion.category_slugs.flatMap((slug) => {
+        const category = categories.find((value) => value.slug === slug)
+        return category ? [category.id] : []
+      }))
+      const matchingBrand = brands.find((brand) => brand.name.toLocaleLowerCase() === suggestion.brand?.toLocaleLowerCase())
+      setBrandId(matchingBrand?.id ?? '')
+      setNewBrandName(suggestion.brand && !matchingBrand ? suggestion.brand : '')
+      setActiveLookupKey(normalizeLookupKey(suggestion.name))
+    } catch (analysisError) {
+      if (generation === photoAnalysisGeneration.current) {
+        setPhotoAnalysisError(analysisError instanceof Error ? analysisError.message : t('photoAnalysisFailed'))
+      }
+    } finally {
+      if (generation === photoAnalysisGeneration.current) setPhotoAnalyzing(false)
+    }
+  }
+
+  async function createClinicBrand() {
+    const name = newBrandName.trim()
+    if (!name || !clinicId) return
+    const existing = brands.find((brand) => brand.name.toLocaleLowerCase() === name.toLocaleLowerCase())
+    if (existing) {
+      setBrandId(existing.id)
+      setNewBrandName('')
+      return
+    }
+    setBrandBusy(true)
+    setError('')
+    const { data, error: insertError } = await supabase.from('brands')
+      .insert({ name, clinic_id: clinicId }).select('id,name,clinic_id').single()
+    setBrandBusy(false)
+    if (insertError) { setError(insertError.message); return }
+    setBrands((current) => [...current, data as Brand].sort((left, right) => left.name.localeCompare(right.name)))
+    setBrandId(data.id)
+    setNewBrandName('')
+  }
+
   async function searchProductAssist() {
     setLookupBusy(true)
     setLookupError('')
     setCandidates([])
     const searchTerm = barcode.trim() || query.trim()
     const inferredBarcode = barcode.trim() || (/^\d{8,14}$/.test(query.trim()) ? query.trim() : '')
+    const lookupKey = normalizeLookupKey(inferredBarcode || searchTerm) || 'photo'
+    setActiveLookupKey(lookupKey)
     const foundCandidates: ProductCandidate[] = []
     const failures: string[] = []
 
@@ -175,9 +259,7 @@ export function AddInventoryForm() {
       if (result.source === 'catalog' && result.product) {
         let imageUrl: string | null = null
         if (result.product.approved_image_path) {
-          const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(result.product.approved_image_path, 3600)
-          if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
-          else imageUrl = image.signedUrl
+          imageUrl = `/api/inventory-image?path=${encodeURIComponent(result.product.approved_image_path)}&user=${encodeURIComponent(userId)}`
         }
         foundCandidates.push({ source: 'catalog', product: result.product, imageUrl })
         return result.product
@@ -212,9 +294,7 @@ export function AddInventoryForm() {
         for (const match of orderedProducts) {
           let imageUrl: string | null = catalogImageUrls[match.id] || null
           if (match.approved_image_path && !imageUrl) {
-            const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(match.approved_image_path, 3600)
-            if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
-            else imageUrl = image.signedUrl
+            imageUrl = `/api/inventory-image?path=${encodeURIComponent(match.approved_image_path)}&user=${encodeURIComponent(userId)}`
           }
           foundCandidates.push({ source: 'catalog', product: match, imageUrl })
         }
@@ -236,9 +316,7 @@ export function AddInventoryForm() {
             for (const match of (data ?? []) as CatalogProduct[]) {
               let imageUrl = catalogImageUrls[match.id] || null
               if (match.approved_image_path && !imageUrl) {
-                const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(match.approved_image_path, 3600)
-                if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
-                else imageUrl = image.signedUrl
+                imageUrl = `/api/inventory-image?path=${encodeURIComponent(match.approved_image_path)}&user=${encodeURIComponent(userId)}`
               }
               foundCandidates.push({ source: 'catalog', product: match, imageUrl })
             }
@@ -265,6 +343,9 @@ export function AddInventoryForm() {
                   description: pharmacyProduct.description ?? '',
                   barcode: externalBarcode || null,
                   brand: pharmacyProduct.brand ?? null,
+                  product_type: '',
+                  model: '',
+                  color: '',
                   category_slugs: [],
                   presentation: 'individual',
                 },
@@ -294,6 +375,9 @@ export function AddInventoryForm() {
                   description: storeResult.description,
                   barcode: externalBarcode || null,
                   brand: null,
+                  product_type: '',
+                  model: '',
+                  color: '',
                   category_slugs: [],
                   presentation: 'individual',
                 },
@@ -319,8 +403,12 @@ export function AddInventoryForm() {
         }
       }
 
+      const { data: rejectedRows, error: rejectedError } = await supabase.from('product_search_rejections')
+        .select('candidate_key').eq('clinic_id', clinicId).eq('lookup_key', lookupKey)
+      if (rejectedError) throw new Error(rejectedError.message)
+      const rejectedKeys = new Set((rejectedRows ?? []).map((row) => row.candidate_key))
       const candidatesByGroup = (['catalog', 'pharmacy', 'store', 'ai', 'exa'] as const).flatMap((source) =>
-        foundCandidates.filter((item) => item.source === source)
+        foundCandidates.filter((item) => item.source === source && !rejectedKeys.has(candidateKey(item)))
           .sort((left, right) => (right.source === 'catalog' ? 100 : right.score) - (left.source === 'catalog' ? 100 : left.score))
           .slice(0, 3),
       )
@@ -328,8 +416,12 @@ export function AddInventoryForm() {
       if (bestPharmacyMatch && 'suggestion' in bestPharmacyMatch) {
         setProduct(null)
         setAiPrefill(bestPharmacyMatch.suggestion)
+        setPrefillVersion((version) => version + 1)
         setQuery(bestPharmacyMatch.suggestion.name)
         setBarcode(bestPharmacyMatch.suggestion.barcode ?? inferredBarcode)
+        const matchingBrand = brands.find((brand) => brand.name.toLocaleLowerCase() === bestPharmacyMatch.suggestion.brand?.toLocaleLowerCase())
+        setBrandId(matchingBrand?.id ?? '')
+        setNewBrandName(bestPharmacyMatch.suggestion.brand && !matchingBrand ? bestPharmacyMatch.suggestion.brand : '')
         setCategoryIds(bestPharmacyMatch.suggestion.category_slugs.flatMap((slug) => {
           const category = categories.find((value) => value.slug === slug)
           return category ? [category.id] : []
@@ -337,7 +429,7 @@ export function AddInventoryForm() {
       }
       setCandidates(candidatesByGroup)
       if (!candidatesByGroup.length) {
-        setLookupError(failures[0] || t('productLookupFailed'))
+        setLookupError(failures[0] || (foundCandidates.length ? t('allSuggestionsRejected') : t('productLookupFailed')))
       } else if (failures.length) {
         setLookupError(t('someSearchSourcesFailed'))
       }
@@ -357,8 +449,13 @@ export function AddInventoryForm() {
     }
     setProduct(null)
     setAiPrefill(selected.suggestion)
+    setPrefillVersion((version) => version + 1)
+    setPhotoSuggestion(null)
     setQuery(selected.suggestion.name)
     setBarcode(selected.suggestion.barcode ?? barcode)
+    const matchingBrand = brands.find((brand) => brand.name.toLocaleLowerCase() === selected.suggestion.brand?.toLocaleLowerCase())
+    setBrandId(matchingBrand?.id ?? '')
+    setNewBrandName(selected.suggestion.brand && !matchingBrand ? selected.suggestion.brand : '')
     setCategoryIds(selected.suggestion.category_slugs.flatMap((slug) => {
       const category = categories.find((value) => value.slug === slug)
       return category ? [category.id] : []
@@ -382,15 +479,38 @@ export function AddInventoryForm() {
   }
 
   function selectPhoto(event: React.ChangeEvent<HTMLInputElement>) {
+    photoAnalysisGeneration.current += 1
     const file = event.target.files?.[0] ?? null
     if (file && (file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) {
       setError(t('invalidImage'))
       event.target.value = ''
       setPhoto(null)
+      setPhotoSuggestion(null)
+      setPhotoAnalyzing(false)
+      setPhotoAnalysisError('')
       return
     }
     setError('')
     setPhoto(file)
+    setPhotoSuggestion(null)
+    setPhotoAnalysisError('')
+    if (file) void analyzeProductPhoto(file)
+    else setPhotoAnalyzing(false)
+  }
+
+  async function rejectCandidate(candidate: ProductCandidate, lookupKey: string) {
+    const { error: rejectionError } = await supabase.from('product_search_rejections').upsert({
+      clinic_id: clinicId,
+      lookup_key: lookupKey,
+      candidate_key: candidateKey(candidate),
+      created_by: userId,
+    }, { onConflict: 'clinic_id,lookup_key,candidate_key', ignoreDuplicates: true })
+    if (rejectionError) { setError(rejectionError.message); return }
+    setCandidates((current) => current.filter((value) => candidateKey(value) !== candidateKey(candidate)))
+    if (candidate.source === 'ai' && photoSuggestion?.name === candidate.suggestion.name) {
+      setPhotoSuggestion(null)
+      setAiPrefill(null)
+    }
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -446,6 +566,9 @@ export function AddInventoryForm() {
       category_id: categoryId,
       brand_id: brandId,
       presentation: String(form.get('presentation') || 'individual'),
+      product_type: String(form.get('product_type') || '').trim(),
+      model: String(form.get('model') || '').trim(),
+      color: String(form.get('color') || '').trim(),
       quantity,
       min_quantity: Number(form.get('min_quantity') || 1),
       expiry_date: String(form.get('expiry_date') || '') || null,
@@ -490,20 +613,24 @@ export function AddInventoryForm() {
       <div className="page-heading"><div><p className="eyebrow">{t('inventory')}</p><h1>{t('addItem')}</h1><p className="subtle">{t('addItemDescription')}</p></div></div>
       <form className="card inventory-form" onSubmit={submit}>
         <div className="catalog-search">
-          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setCategoryIds([]); setCandidates([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
+          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setPhotoSuggestion(null); setCategoryIds([]); setCandidates([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
           <p className="field-hint">{t('catalogLookupHint')}</p>
-          {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}>{catalogImageUrls[result.id] ? <img src={catalogImageUrls[result.id]} alt="" onError={() => setCatalogImageUrls((current) => ({ ...current, [result.id]: '' }))} /> : <span className="catalog-result-image" aria-hidden="true">✳</span>}<span className="catalog-result-copy"><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></span></button></li>)}</ul>}
+          {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}>{catalogImageUrls[result.id] ? <img src={catalogImageUrls[result.id]} alt="" loading="lazy" decoding="async" onError={() => setCatalogImageUrls((current) => ({ ...current, [result.id]: '' }))} /> : <span className="catalog-result-image" aria-hidden="true">✳</span>}<span className="catalog-result-copy"><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></span></button></li>)}</ul>}
           {(query.trim().length >= 2 || barcode.trim() || photo) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t(lookupStep === 'catalog' ? 'searchingCatalog' : lookupStep === 'pharmacy' ? 'searchingPharmacies' : lookupStep === 'store' ? 'searchingStores' : 'searchingWithAi') : t('searchCatalogPharmacyAi')}</button>}
           {lookupError && <p role="alert" className="error-message">{lookupError}</p>}
         </div>
-        {product && <div className="catalog-selected" role="status">{catalogImageUrls[product.id] && <img src={catalogImageUrls[product.id]} alt={product.name} onError={() => setCatalogImageUrls((current) => ({ ...current, [product.id]: '' }))} />}<span>{t('catalogProductSelected', { name: product.name })}</span><button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]) }}>{t('clear')}</button></div>}
+        {product && <div className="catalog-selected" role="status">{catalogImageUrls[product.id] && <img src={catalogImageUrls[product.id]} alt={product.name} loading="lazy" decoding="async" onError={() => setCatalogImageUrls((current) => ({ ...current, [product.id]: '' }))} />}<span>{t('catalogProductSelected', { name: product.name })}</span><button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]); setBrandId(''); setNewBrandName('') }}>{t('clear')}</button></div>}
         <div className="form-grid">
-          <label>{t('name')}<input name="name" required maxLength={160} defaultValue={product?.name ?? aiPrefill?.name ?? ''} key={`name-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
-          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null); setCandidates([]) }} placeholder={t('barcodePlaceholder')} /></label>
+          <label>{t('name')}<input name="name" required maxLength={160} defaultValue={product?.name ?? aiPrefill?.name ?? ''} key={`name-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
+          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null); setPhotoSuggestion(null); setCandidates([]) }} placeholder={t('barcodePlaceholder')} /></label>
           <label>{t('categories')}<select name="category_ids" multiple value={categoryIds} onChange={(event) => setCategoryIds([...event.target.selectedOptions].map((option) => option.value))} aria-describedby="category-selection-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="category-selection-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
-          <label>{t('brand')}<select name="brand_id" defaultValue={product?.brand_id ?? brands.find((brand) => brand.name.toLocaleLowerCase() === aiPrefill?.brand?.toLocaleLowerCase())?.id ?? ''} key={`brand-${product?.id ?? aiPrefill?.name ?? 'custom'}`}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label>
-          <label className="field-wide">{t('description')}<textarea name="description" rows={4} maxLength={2000} defaultValue={product?.description ?? aiPrefill?.description ?? ''} key={`description-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
-          <label>{t('presentation')}<select name="presentation" defaultValue={product?.presentation ?? aiPrefill?.presentation ?? 'individual'} key={`presentation-${product?.id ?? aiPrefill?.name ?? 'custom'}`}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label>
+          <label>{t('brand')}<select name="brand_id" value={brandId} onChange={(event) => { setBrandId(event.target.value); setNewBrandName('') }}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}{brand.clinic_id ? ` · ${t('clinicOnly')}` : ''}</option>)}</select></label>
+          <div className="brand-create-control"><label>{t('brandName')}<input value={newBrandName} onChange={(event) => setNewBrandName(event.target.value)} maxLength={120} placeholder={aiPrefill?.brand || t('brandName')} /></label><button type="button" className="secondary-button" disabled={brandBusy || !newBrandName.trim()} onClick={() => void createClinicBrand()}>{brandBusy ? t('saving') : t('createBrand')}</button><span className="field-hint">{t('clinicBrandCreatedHint')}</span></div>
+          <label className="field-wide">{t('description')}<textarea name="description" rows={4} maxLength={2000} defaultValue={product?.description ?? aiPrefill?.description ?? ''} key={`description-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
+          <label>{t('productType')}<input name="product_type" maxLength={120} defaultValue={aiPrefill?.product_type ?? product?.product_type ?? ''} key={`product-type-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
+          <label>{t('model')}<input name="model" maxLength={120} defaultValue={aiPrefill?.model ?? product?.model ?? ''} key={`model-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
+          <label>{t('color')}<input name="color" maxLength={80} defaultValue={aiPrefill?.color ?? product?.color ?? ''} key={`color-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
+          <label>{t('presentation')}<select name="presentation" defaultValue={product?.presentation ?? aiPrefill?.presentation ?? 'individual'} key={`presentation-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label>
           <label>{t('status')}<select name="status" defaultValue="new"><option value="new">{t('new')}</option><option value="opened">{t('opened')}</option><option value="used">{t('used')}</option><option value="defective">{t('defective')}</option></select></label>
           <label>{t('quantity')}<input name="quantity" type="number" min="0" step="1" defaultValue="1" required /></label>
           <label>{t('minimumQuantity')}<input name="min_quantity" type="number" min="0" step="1" defaultValue="1" required /></label>
@@ -514,7 +641,17 @@ export function AddInventoryForm() {
             <span className="field-hint">{t('approvedImageHint')}</span>
           </div>
         </div>
-        {photo && <p className="field-hint">{t('photoLookupPrivacy')}</p>}
+        {photo && <div className="photo-analysis-status"><p className="field-hint">{photoAnalyzing ? t('analyzingProductPhoto') : t('photoLookupPrivacy')}</p>
+          {photoAnalysisError && <p role="alert" className="error-message">{photoAnalysisError}</p>}
+          {photoSuggestion && !photoAnalyzing && <div><span>{t('photoAnalysisPrefilled')}</span><button type="button" className="text-button danger-text" onClick={() => void rejectCandidate({
+            source: 'ai',
+            sourceName: t('aiSource'),
+            suggestion: photoSuggestion,
+            sources: [],
+            imageUrl: photoPreview || null,
+            score: 0,
+          }, activeLookupKey || normalizeLookupKey(photoSuggestion.name))}>{t('notThisProduct')}</button></div>}
+        </div>}
         {error && <p role="alert" className="error-message">{error}</p>}
         {message && <p role="status" className="success-message">{message}</p>}
         <div className="form-footer"><p className="field-hint">{t('expiryOptionalHint')}</p><button className="primary-button" type="submit" disabled={busy || !clinicId}>{busy ? t('saving') : t('saveItem')}</button></div>
@@ -545,7 +682,7 @@ export function AddInventoryForm() {
                   <h3>{name}</h3>
                   {description && <p>{description}</p>}
                   {option.source !== 'catalog' && option.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{t('viewProductSource', { source: source.title })}</a>)}
-                  <button type="button" className="secondary-button" disabled={busy} onClick={() => void applyCandidate(option)}>{t('useSuggestion')}</button>
+                  <div className="suggestion-actions"><button type="button" className="secondary-button" disabled={busy} onClick={() => void applyCandidate(option)}>{t('useSuggestion')}</button><button type="button" className="text-button danger-text" disabled={busy} onClick={() => void rejectCandidate(option, activeLookupKey)}>{t('notThisProduct')}</button></div>
                 </div>
               </article>
             })}

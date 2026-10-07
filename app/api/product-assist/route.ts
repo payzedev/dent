@@ -28,6 +28,9 @@ type CatalogMatch = {
   approved_image_path: string | null
   category_ids: string[]
   presentation: 'individual' | 'set' | 'box'
+  product_type: string
+  model: string
+  color: string
 }
 
 type Suggestion = {
@@ -35,6 +38,9 @@ type Suggestion = {
   description: string
   barcode: string | null
   brand: string | null
+  product_type: string
+  model: string
+  color: string
   category_slugs: string[]
   presentation: 'individual' | 'set' | 'box'
 }
@@ -285,6 +291,9 @@ function readSuggestion(data: Record<string, unknown>, validSlugs: Set<string>):
     description: typeof data.description === 'string' ? data.description.slice(0, 2000) : '',
     barcode: typeof data.barcode === 'string' ? data.barcode.slice(0, 128) : null,
     brand: typeof data.brand === 'string' ? data.brand.slice(0, 120) : null,
+    product_type: typeof data.product_type === 'string' ? data.product_type.slice(0, 120) : '',
+    model: typeof data.model === 'string' ? data.model.slice(0, 120) : '',
+    color: typeof data.color === 'string' ? data.color.slice(0, 80) : '',
     category_slugs: categorySlugs,
     presentation,
   }
@@ -313,6 +322,7 @@ export async function POST(request: Request) {
   const form = await request.formData()
   const query = String(form.get('query') ?? '').trim().slice(0, 160)
   const barcode = String(form.get('barcode') ?? '').trim().slice(0, 128)
+  const analyzePhoto = form.get('analyze_photo') === 'true'
   const image = form.get('image')
   if (!query && !barcode && !(image instanceof File && image.size > 0)) {
     return jsonError('Enter a product name, barcode, or product photo.', 400)
@@ -342,6 +352,53 @@ export async function POST(request: Request) {
     return jsonError('Product lookup is not configured. Set DEEPSEEK_API_KEY, NVIDIA_NIM_API_KEY, EXA_API_KEY, and/or GEMINI_API_KEY as server-only secrets.', 503)
   }
 
+  if (analyzePhoto && imageDataUrl) {
+    const { data: categoryRows, error: categoriesError } = await supabase
+      .from('categories').select('slug,name_en,name_es').eq('is_active', true).order('sort_order')
+    if (categoriesError) {
+      console.error('Product categories could not be loaded for photo analysis', categoriesError.message)
+      return jsonError('Product categories could not be loaded. Please try again.', 500)
+    }
+    const categoryOptions = (categoryRows ?? []).map((category) => ({
+      slug: category.slug,
+      name: `${category.name_en} / ${category.name_es}`,
+    }))
+    const validSlugs = new Set(categoryOptions.map((category) => category.slug))
+    const prompt = [
+      'Inspect the uploaded product package photo and extract only details that are visible or clearly identifiable.',
+      'Read the product name, package description, brand, dental product type, model/reference, color, visible barcode, category, and whether the package is an individual item, set, or box.',
+      'Never guess obscured details. Return empty strings, null barcode/brand, and an empty category_slugs array when uncertain.',
+      'Return JSON only with keys name, description, barcode, brand, product_type, model, color, category_slugs, presentation.',
+      'category_slugs must use exact slugs from this list: ' + JSON.stringify(categoryOptions),
+      'presentation must be individual, set, or box.',
+      query || barcode ? `User-provided search context: ${[query, barcode].filter(Boolean).join(' / ')}` : '',
+    ].filter(Boolean).join('\n')
+
+    let suggestion: Suggestion | null = null
+    let analysisFailure = ''
+    if (apiKey) {
+      try {
+        suggestion = readSuggestion(parseJsonResponse(await askModel(apiKey, prompt, imageDataUrl)), validSlugs)
+      } catch (error) {
+        analysisFailure = error instanceof Error ? error.message : 'NVIDIA image analysis failed'
+        console.error('NVIDIA package photo analysis failed', analysisFailure)
+      }
+    }
+    if (!suggestion && geminiApiKey) {
+      try {
+        suggestion = readSuggestion(parseJsonResponse(await askGemini(geminiApiKey, prompt, imageDataUrl)), validSlugs)
+      } catch (error) {
+        analysisFailure = error instanceof Error ? error.message : 'Gemini image analysis failed'
+        console.error('Gemini package photo analysis failed', analysisFailure)
+      }
+    }
+    if (!suggestion) {
+      return jsonError(analysisFailure || 'Image analysis requires NVIDIA_NIM_API_KEY or GEMINI_API_KEY. Configure an image-capable provider and try again.', 502)
+    }
+    if (!suggestion.barcode && barcode) suggestion.barcode = barcode
+    return NextResponse.json({ source: 'ai', suggestion, suggestions: [suggestion], sources: [] })
+  }
+
   let geminiImageSuggestion: Suggestion | null = null
   if (imageDataUrl && !barcode && !query) {
     let identity = { barcode: '', name: '' }
@@ -365,7 +422,7 @@ export async function POST(request: Request) {
           [
             'Identify this dental or orthodontic product from its image for an inventory catalog.',
             'Do not guess a barcode, brand, or product facts. Use an empty string when uncertain.',
-            'Return JSON only with keys: name, description, barcode, brand, category_slugs, presentation.',
+            'Return JSON only with keys: name, description, barcode, brand, product_type, model, color, category_slugs, presentation.',
             'Use an empty category_slugs array; presentation must be individual, set, or box.',
           ].join('\n'),
           imageDataUrl,
@@ -412,7 +469,7 @@ export async function POST(request: Request) {
     'Identify up to three distinct dental or orthodontic products that best match the supplied text and optional photo.',
     'This is a suggestion, not verified web research. Do not invent alternative product names or facts to fill the list; return fewer than three when the evidence is insufficient.',
     'Never invent a barcode, brand, or detail; use null or an empty string when unknown.',
-    'Do not return image URLs or external links. Return JSON only with one key suggestions, an array of up to three objects with keys: name, description, barcode, brand, category_slugs, presentation.',
+    'Do not return image URLs or external links. Return JSON only with one key suggestions, an array of up to three objects with keys: name, description, barcode, brand, product_type, model, color, category_slugs, presentation.',
     'category_slugs must contain only exact slugs from this list: ' + JSON.stringify(categoryOptions),
     'presentation must be individual, set, or box.',
     userSearch ? `User search: ${userSearch}` : 'Identify the product from the photo.',

@@ -108,6 +108,12 @@ label{display:grid;gap:7px;color:var(--ink);font-size:13px;font-weight:650}
 .suggestion-copy p{margin:0;color:var(--muted);font-size:12px}
 .suggestion-copy a{font-size:12px;color:var(--primary);font-weight:650}
 .suggestion-copy .secondary-button{margin-top:4px}
+.suggestion-actions{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+.brand-create-control{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:8px}
+.brand-create-control .field-hint{grid-column:1/-1}
+.photo-analysis-status{display:grid;gap:4px}
+.photo-analysis-status>div{display:flex;align-items:center;flex-wrap:wrap;gap:6px;color:var(--muted);font-size:12px}
+.photo-analysis-status .error-message{margin:0}
 .suggestion-meta{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px}
 .suggestion-meta strong{color:#537A5D}
 .product-candidate-dialog h2{margin:0;padding-right:36px}
@@ -232,6 +238,8 @@ td .text-button{padding-left:0}
 @media(max-width:540px){
   .photo-picker{grid-template-columns:1fr}
   .photo-picker .field-hint{grid-column:auto}
+  .brand-create-control{grid-template-columns:1fr}
+  .brand-create-control .field-hint{grid-column:auto}
   .suggestion-card{grid-template-columns:68px minmax(0,1fr);gap:9px;padding:9px}
   .suggestion-image{width:68px;height:68px}
 }

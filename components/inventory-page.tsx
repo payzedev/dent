@@ -24,6 +24,9 @@ type InventoryItem = {
   brand_id: string | null
   product_id: string | null
   presentation: 'individual' | 'set' | 'box'
+  product_type: string
+  model: string
+  color: string
 }
 
 export function InventoryPage() {
@@ -48,7 +51,7 @@ export function InventoryPage() {
     setError('')
     const [{ data: { user }, error: authError }, { data: rows, error: itemsError }, { data: categoryRows, error: categoryError }, { data: brandRows, error: brandError }] = await Promise.all([
       supabase.auth.getUser(),
-      supabase.from('inventory_items').select('id,name,description,quantity,min_quantity,expiry_date,status,created_at,barcode,image_path,category_id,brand_id,product_id,presentation').order('name'),
+      supabase.from('inventory_items').select('id,name,description,quantity,min_quantity,expiry_date,status,created_at,barcode,image_path,category_id,brand_id,product_id,presentation,product_type,model,color').order('name'),
       supabase.from('categories').select('id,slug,name_en,name_es,color_hex').eq('is_active', true).order('sort_order'),
       supabase.from('brands').select('id,name').order('name'),
     ])
@@ -99,21 +102,10 @@ export function InventoryPage() {
       item.image_path,
       productList.find((product) => product.id === item.product_id)?.approved_image_path ?? null,
     ]).filter((path): path is string => Boolean(path)))]
-    const signedImages = await Promise.all(paths.map(async (path) => {
-      const { data, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(path, 3600)
-      if (imageError) {
-        console.error('Could not load an inventory or shared catalog photo', imageError.message)
-        return [path, ''] as const
-      }
-      return [path, data.signedUrl] as const
-    }))
-    const imageMap = Object.fromEntries(signedImages)
-    const itemWithoutPhoto = inventory.find((item) => {
-      const productImage = productList.find((product) => product.id === item.product_id)?.approved_image_path
-      return !imageMap[item.image_path ?? ''] && !imageMap[productImage ?? '']
-        && Boolean(item.image_path || productImage)
-    })
-    if (itemWithoutPhoto) setError(t('productPhotoUnavailable', { name: itemWithoutPhoto.name }))
+    const imageMap = Object.fromEntries(paths.map((path) => [
+      path,
+      `/api/inventory-image?path=${encodeURIComponent(path)}&user=${encodeURIComponent(user.id)}`,
+    ]))
     setImages(imageMap)
   }, [supabase, t])
 
@@ -194,6 +186,9 @@ export function InventoryPage() {
       category_id: categoryIds[0] || null,
       brand_id: String(form.get('brand_id')) || null,
       presentation: String(form.get('presentation') || 'individual'),
+      product_type: String(form.get('product_type') || '').trim(),
+      model: String(form.get('model') || '').trim(),
+      color: String(form.get('color') || '').trim(),
       quantity,
       min_quantity: Number(form.get('min_quantity')),
       expiry_date: String(form.get('expiry_date') || '') || null,
@@ -244,7 +239,7 @@ export function InventoryPage() {
         const imagePath = item.image_path && images[item.image_path] ? item.image_path : product?.approved_image_path && images[product.approved_image_path] ? product.approved_image_path : path
         const image = imagePath ? images[imagePath] : ''
         return <button key={item.id} type="button" className="inventory-card card" onClick={() => setSelected(item)}>
-          <span className="inventory-image">{image && imagePath ? <img src={image} alt="" onError={() => setImages((current) => ({ ...current, [imagePath]: '' }))} /> : <span aria-hidden="true">✳</span>}</span>
+          <span className="inventory-image">{image && imagePath ? <img src={image} alt="" loading="lazy" decoding="async" onError={() => setImages((current) => ({ ...current, [imagePath]: '' }))} /> : <span aria-hidden="true">✳</span>}</span>
           <span className="inventory-card-copy"><strong>{item.name}</strong><span>{categoryNames(item.category_ids)}</span><span>{t('quantityPresentation', { count: item.quantity, presentation: t(item.presentation) })}</span></span>
           <span className={`status-badge status-${item.status}`}>{t(item.status)}</span>
         </button>
@@ -260,12 +255,15 @@ export function InventoryPage() {
             const path = selected.image_path || product?.approved_image_path
             const imagePath = selected.image_path && images[selected.image_path] ? selected.image_path : product?.approved_image_path && images[product.approved_image_path] ? product.approved_image_path : path
             const imageUrl = imagePath ? images[imagePath] : ''
-            return imageUrl && imagePath ? <img className="detail-image" src={imageUrl} alt={selected.name} onError={() => setImages((current) => ({ ...current, [imagePath]: '' }))} /> : null
+            return imageUrl && imagePath ? <img className="detail-image" src={imageUrl} alt={selected.name} decoding="async" onError={() => setImages((current) => ({ ...current, [imagePath]: '' }))} /> : null
           })()}
           <dl className="detail-list">
             <div><dt>{t('description')}</dt><dd>{selected.description || t('notProvided')}</dd></div>
             <div><dt>{t('barcode')}</dt><dd>{selected.barcode || t('notProvided')}</dd></div>
             <div><dt>{t('presentation')}</dt><dd>{t(selected.presentation)}</dd></div>
+            <div><dt>{t('productType')}</dt><dd>{selected.product_type || t('notProvided')}</dd></div>
+            <div><dt>{t('model')}</dt><dd>{selected.model || t('notProvided')}</dd></div>
+            <div><dt>{t('color')}</dt><dd>{selected.color || t('notProvided')}</dd></div>
             <div><dt>{t('registeredAt')}</dt><dd>{new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(selected.created_at))}</dd></div>
             <div><dt>{t('expiryDate')}</dt><dd>{selected.expiry_date ? new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }).format(new Date(`${selected.expiry_date}T12:00:00`)) : t('notApplicable')}</dd></div>
             <div><dt>{t('minimumQuantity')}</dt><dd>{selected.min_quantity}</dd></div>
@@ -274,6 +272,8 @@ export function InventoryPage() {
             <label>{t('name')}<input name="name" defaultValue={selected.name} required maxLength={160} /></label>
             <label>{t('description')}<textarea name="description" defaultValue={selected.description} rows={3} maxLength={2000} /></label>
             <label>{t('barcode')}<input name="barcode" defaultValue={selected.barcode ?? ''} maxLength={128} /></label>
+            <div className="form-row"><label>{t('productType')}<input name="product_type" defaultValue={selected.product_type} maxLength={120} /></label><label>{t('model')}<input name="model" defaultValue={selected.model} maxLength={120} /></label></div>
+            <label>{t('color')}<input name="color" defaultValue={selected.color} maxLength={80} /></label>
             <label>{t('categories')}<select name="category_ids" multiple defaultValue={selected.category_ids} size={Math.min(categories.length, 5)} aria-describedby="edit-category-selection-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="edit-category-selection-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
             <div className="form-row"><label>{t('brand')}<select name="brand_id" defaultValue={selected.brand_id ?? ''}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label><label>{t('presentation')}<select name="presentation" defaultValue={selected.presentation}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label></div>
             <div className="form-row"><label>{t('quantity')}<input name="quantity" type="number" min="0" defaultValue={selected.quantity} required /></label><label>{t('minimumQuantity')}<input name="min_quantity" type="number" min="0" defaultValue={selected.min_quantity} required /></label></div>

@@ -6,11 +6,11 @@ import { useLocale, useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase/client'
 
 type Category = { id: string; slug: string; name_en: string; name_es: string; color_hex: string; is_active: boolean; sort_order: number }
-type Brand = { id: string; name: string }
-type Product = { id: string; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; approved_image_path: string | null; is_approved: boolean; presentation: 'individual' | 'set' | 'box'; sourceInventoryItemId?: string }
+type Brand = { id: string; name: string; clinic_id: string | null }
+type Product = { id: string; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; approved_image_path: string | null; is_approved: boolean; presentation: 'individual' | 'set' | 'box'; product_type: string; model: string; color: string; sourceInventoryItemId?: string }
 type User = { id: string; email: string | null; full_name: string; clinic_name: string; status: string; created_at: string }
 type Clinic = { id: string; name: string }
-type ClinicItem = { id: string; clinic_id: string; owner_id: string; product_id: string | null; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; image_path: string | null; presentation: 'individual' | 'set' | 'box'; quantity: number; status: 'new' | 'opened' | 'used' | 'defective' | 'missing'; owner_name: string }
+type ClinicItem = { id: string; clinic_id: string; owner_id: string; product_id: string | null; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; image_path: string | null; presentation: 'individual' | 'set' | 'box'; product_type: string; model: string; color: string; quantity: number; status: 'new' | 'opened' | 'used' | 'defective' | 'missing'; owner_name: string }
 type Stats = { users: number; clinics: number; items: number; products: number; categories: number; brands: number; reports: number }
 
 const emptyStats: Stats = { users: 0, clinics: 0, items: 0, products: 0, categories: 0, brands: 0, reports: 0 }
@@ -60,11 +60,11 @@ export function AdminConsole() {
       supabase.from('brands').select('id', { count: 'exact', head: true }),
       supabase.from('support_reports').select('id', { count: 'exact', head: true }),
       supabase.from('categories').select('id,slug,name_en,name_es,color_hex,is_active,sort_order').order('sort_order'),
-      supabase.from('brands').select('id,name').order('name'),
-      supabase.from('catalog_products').select('id,name,description,barcode,category_id,brand_id,approved_image_path,is_approved,presentation').order('name'),
+      supabase.from('brands').select('id,name,clinic_id').order('name'),
+      supabase.from('catalog_products').select('id,name,description,barcode,category_id,brand_id,approved_image_path,is_approved,presentation,product_type,model,color').order('name'),
       supabase.from('profiles').select('id,email,full_name,clinic_name,status,created_at').order('created_at', { ascending: false }).limit(100),
       supabase.from('clinics').select('id,name').order('name'),
-      supabase.from('inventory_items').select('id,clinic_id,owner_id,product_id,name,description,barcode,category_id,brand_id,image_path,presentation,quantity,status').order('name'),
+      supabase.from('inventory_items').select('id,clinic_id,owner_id,product_id,name,description,barcode,category_id,brand_id,image_path,presentation,product_type,model,color,quantity,status').order('name'),
     ])
     const productIds = (productRows ?? []).map((product) => product.id)
     const itemIds = (clinicItemRows ?? []).map((item) => item.id)
@@ -133,7 +133,7 @@ export function AdminConsole() {
         error?: string
         source?: 'catalog' | 'ai' | 'exa'
         product?: Product
-        suggestion?: { name: string; description: string; barcode: string | null; brand: string | null; category_slugs: string[]; presentation: Product['presentation'] }
+        suggestion?: { name: string; description: string; barcode: string | null; brand: string | null; category_slugs: string[]; presentation: Product['presentation']; product_type?: string; model?: string; color?: string }
         sources?: { title: string; url: string }[]
       }
       if (!response.ok) {
@@ -162,6 +162,9 @@ export function AdminConsole() {
           approved_image_path: null,
           is_approved: false,
           presentation: suggestion.presentation,
+          product_type: suggestion.product_type ?? '',
+          model: suggestion.model ?? '',
+          color: suggestion.color ?? '',
           sourceInventoryItemId: selectedProduct?.sourceInventoryItemId,
         })
         return
@@ -186,6 +189,9 @@ export function AdminConsole() {
       approved_image_path: null,
       is_approved: false,
       presentation: item.presentation,
+      product_type: item.product_type,
+      model: item.model,
+      color: item.color,
       sourceInventoryItemId: item.product_id ? undefined : item.id,
     })
     setAdminLookupSources([])
@@ -197,6 +203,14 @@ export function AdminConsole() {
     event.preventDefault()
     setBusy(true); setError(''); setNotice('')
     const form = new FormData(event.currentTarget)
+    const categoryIds = [...new Set(form.getAll('category_ids').map(String).filter(Boolean))]
+    const brandId = String(form.get('brand_id') || '') || null
+    const isApproved = form.get('is_approved') === 'on'
+    if (isApproved && brandId && brands.find((brand) => brand.id === brandId)?.clinic_id) {
+      setBusy(false)
+      setError(t('globalizeBrandBeforeApprovingProduct'))
+      return
+    }
     const fileValue = form.get('image')
     const file = fileValue instanceof File && fileValue.size > 0 ? fileValue : null
     let imagePath = selectedProduct?.approved_image_path ?? null
@@ -209,16 +223,18 @@ export function AdminConsole() {
       const { error: uploadError } = await supabase.storage.from('inventory-images').upload(imagePath, file, { contentType: file.type })
       if (uploadError) { setBusy(false); setError(uploadError.message); return }
     }
-    const categoryIds = [...new Set(form.getAll('category_ids').map(String).filter(Boolean))]
     const values = {
       name: String(form.get('name')).trim(),
       description: String(form.get('description')).trim(),
       barcode: String(form.get('barcode')).trim() || null,
       category_id: categoryIds[0] || null,
-      brand_id: String(form.get('brand_id') || '') || null,
+      brand_id: brandId,
       presentation: String(form.get('presentation') || 'individual') as Product['presentation'],
+      product_type: String(form.get('product_type') || '').trim(),
+      model: String(form.get('model') || '').trim(),
+      color: String(form.get('color') || '').trim(),
       approved_image_path: imagePath,
-      is_approved: form.get('is_approved') === 'on',
+      is_approved: isApproved,
     }
     const result = selectedProduct?.id
       ? await supabase.from('catalog_products').update(values).eq('id', selectedProduct.id).select('id').single()
@@ -325,6 +341,14 @@ export function AdminConsole() {
     await load()
   }
 
+  async function makeBrandGlobal(brand: Brand) {
+    if (!brand.clinic_id || !window.confirm(t('confirmMakeBrandGlobal', { name: brand.name }))) return
+    const { error: updateError } = await supabase.from('brands').update({ clinic_id: null }).eq('id', brand.id)
+    if (updateError) { setError(updateError.message); return }
+    setNotice(t('brandMadeGlobal', { name: brand.name }))
+    await load()
+  }
+
   async function toggleUser(user: User) {
     const suspended = user.status !== 'suspended'
     if (!window.confirm(t(suspended ? 'confirmSuspendUser' : 'confirmReactivateUser', { name: user.email || user.full_name }))) return
@@ -358,7 +382,7 @@ export function AdminConsole() {
     })}</div>}
     {tab === 'catalog' && <div className="admin-management">
       <section className="card admin-section">
-        <div className="section-heading"><div><h2>{t('globalProducts')}</h2><p className="subtle">{t('catalogAdminDescription')}</p></div><button type="button" className="primary-button" onClick={() => setSelectedProduct({ id: '', name: '', description: '', barcode: null, category_id: null, category_ids: [], brand_id: null, approved_image_path: null, is_approved: false, presentation: 'individual' })}>{t('createProduct')}</button></div>
+        <div className="section-heading"><div><h2>{t('globalProducts')}</h2><p className="subtle">{t('catalogAdminDescription')}</p></div><button type="button" className="primary-button" onClick={() => setSelectedProduct({ id: '', name: '', description: '', barcode: null, category_id: null, category_ids: [], brand_id: null, approved_image_path: null, is_approved: false, presentation: 'individual', product_type: '', model: '', color: '' })}>{t('createProduct')}</button></div>
         {selectedProduct && <form key={`admin-product-${selectedProduct.id}-${selectedProduct.name}-${selectedProduct.barcode ?? ''}`} className="admin-product-form" onSubmit={(event) => void saveProduct(event)}>
           <h3>{selectedProduct.id ? t('editProduct') : t('createProduct')}</h3>
           <div className="form-grid">
@@ -367,6 +391,9 @@ export function AdminConsole() {
             <label>{t('categories')}<select name="category_ids" multiple value={selectedProduct.category_ids} onChange={(event) => setSelectedProduct({ ...selectedProduct, category_ids: [...event.target.selectedOptions].map((option) => option.value) })} size={Math.min(categories.length, 5)} aria-describedby="product-category-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="product-category-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
             <label>{t('brand')}<select name="brand_id" defaultValue={selectedProduct.brand_id ?? ''} key={`pbrand-${selectedProduct.id}`}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label>
             <label>{t('presentation')}<select name="presentation" defaultValue={selectedProduct.presentation} key={`ppresentation-${selectedProduct.id}`}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label>
+            <label>{t('productType')}<input name="product_type" defaultValue={selectedProduct.product_type} maxLength={120} /></label>
+            <label>{t('model')}<input name="model" defaultValue={selectedProduct.model} maxLength={120} /></label>
+            <label>{t('color')}<input name="color" defaultValue={selectedProduct.color} maxLength={80} /></label>
             <label className="field-wide">{t('description')}<textarea name="description" rows={3} defaultValue={selectedProduct.description} key={`pdescription-${selectedProduct.id}`} /></label>
             <label>{t('approvedProductImage')}<input type="file" name="image" accept="image/jpeg,image/png,image/webp" /></label>
             <label className="checkbox-label"><input type="checkbox" name="is_approved" defaultChecked={selectedProduct.is_approved} key={`papproved-${selectedProduct.id}`} />{t('approvedForClinics')}</label>
@@ -391,7 +418,8 @@ export function AdminConsole() {
       </section>
       <section className="card admin-section">
         <h2>{t('manageBrands')}</h2><form className="inline-admin-form" onSubmit={(event) => void addBrand(event)}><input name="name" placeholder={t('brandName')} required maxLength={120} /><button className="secondary-button">{t('createBrand')}</button></form>
-        <ul className="brand-list">{brands.map((brand) => <li key={brand.id}><form className="brand-edit-form" onSubmit={(event) => void editBrand(event, brand)}><input name="name" defaultValue={brand.name} required maxLength={120} aria-label={t('brandName')} /><button className="text-button" type="submit">{t('saveChanges')}</button><button className="text-button danger-text" type="button" onClick={() => void deleteBrand(brand)}>{t('delete')}</button></form></li>)}</ul>
+        <p className="subtle">{t('clinicBrandModerationHint')}</p>
+        <ul className="brand-list">{brands.map((brand) => <li key={brand.id}><form className="brand-edit-form" onSubmit={(event) => void editBrand(event, brand)}><input name="name" defaultValue={brand.name} required maxLength={120} aria-label={t('brandName')} /><span className={`status-badge ${brand.clinic_id ? 'status-missing' : 'status-new'}`}>{t(brand.clinic_id ? 'clinicOnly' : 'global')}</span><button className="text-button" type="submit">{t('saveChanges')}</button>{brand.clinic_id && <button className="text-button" type="button" onClick={() => void makeBrandGlobal(brand)}>{t('makeGlobal')}</button>}<button className="text-button danger-text" type="button" onClick={() => void deleteBrand(brand)}>{t('delete')}</button></form></li>)}</ul>
       </section>
     </div>}
     {tab === 'users' && <section className="card admin-section"><h2>{t('users')}</h2><p className="subtle">{t('userAdminDescription')}</p><div className="table-wrap"><table><thead><tr><th>{t('user')}</th><th>{t('clinic')}</th><th>{t('registeredAt')}</th><th>{t('status')}</th><th>{t('actions')}</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><strong>{user.full_name || t('unnamedUser')}</strong><br /><span className="field-hint">{user.email}</span></td><td>{user.clinic_name || '—'}</td><td>{new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }).format(new Date(user.created_at))}</td><td>{t(user.status === 'suspended' ? 'suspended' : 'active')}</td><td><button className="text-button" type="button" onClick={() => void toggleUser(user)}>{t(user.status === 'suspended' ? 'reactivate' : 'suspend')}</button></td></tr>)}</tbody></table></div></section>}
