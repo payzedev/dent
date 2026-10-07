@@ -7,7 +7,7 @@ import { createClient } from '@/lib/supabase/client'
 import { BarcodeScanner } from '@/components/barcode-scanner'
 import { ScanIcon, SearchIcon } from '@/components/icons'
 
-type Category = { id: string; name_en: string; name_es: string }
+type Category = { id: string; slug: string; name_en: string; name_es: string }
 type Brand = { id: string; name: string }
 type CatalogProduct = {
   id: string
@@ -20,6 +20,17 @@ type CatalogProduct = {
   approved_image_path: string | null
   presentation: 'individual' | 'set' | 'box'
 }
+type ProductSuggestion = {
+  name: string
+  description: string
+  barcode: string | null
+  brand: string | null
+  category_slugs: string[]
+  presentation: 'individual' | 'set' | 'box'
+}
+type ProductCandidate =
+  | { source: 'catalog'; product: CatalogProduct; imageUrl: string | null }
+  | { source: 'ai'; suggestion: ProductSuggestion }
 
 export function AddInventoryForm() {
   const t = useTranslations()
@@ -36,6 +47,11 @@ export function AddInventoryForm() {
   const [categoryIds, setCategoryIds] = useState<string[]>([])
   const [barcode, setBarcode] = useState('')
   const [scannerOpen, setScannerOpen] = useState(false)
+  const [candidate, setCandidate] = useState<ProductCandidate | null>(null)
+  const [aiPrefill, setAiPrefill] = useState<ProductSuggestion | null>(null)
+  const [lookupBusy, setLookupBusy] = useState(false)
+  const [lookupError, setLookupError] = useState('')
+  const [photoPreview, setPhotoPreview] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
@@ -46,7 +62,7 @@ export function AddInventoryForm() {
     async function initialize() {
       const [{ data: { user }, error: authError }, { data: categoryRows, error: categoryError }, { data: brandRows, error: brandError }] = await Promise.all([
         supabase.auth.getUser(),
-        supabase.from('categories').select('id,name_en,name_es').eq('is_active', true).order('sort_order'),
+        supabase.from('categories').select('id,slug,name_en,name_es').eq('is_active', true).order('sort_order'),
         supabase.from('brands').select('id,name').order('name'),
       ])
       if (cancelled) return
@@ -67,6 +83,16 @@ export function AddInventoryForm() {
   }, [supabase, t])
 
   useEffect(() => {
+    if (!photo) {
+      setPhotoPreview('')
+      return
+    }
+    const previewUrl = URL.createObjectURL(photo)
+    setPhotoPreview(previewUrl)
+    return () => URL.revokeObjectURL(previewUrl)
+  }, [photo])
+
+  useEffect(() => {
     const term = query.trim()
     if (product || term.length < 2) { setResults([]); return }
     let cancelled = false
@@ -81,6 +107,7 @@ export function AddInventoryForm() {
 
   function chooseProduct(value: CatalogProduct) {
     setProduct(value)
+    setAiPrefill(null)
     setQuery(value.name)
     setBarcode(value.barcode ?? '')
     setCategoryIds(value.category_ids?.length ? value.category_ids : value.category_id ? [value.category_id] : [])
@@ -91,9 +118,74 @@ export function AddInventoryForm() {
     setBarcode(value)
     setQuery(value)
     setProduct(null)
+    setAiPrefill(null)
     setCategoryIds([])
     setScannerOpen(false)
   }, [])
+
+  async function searchProductAssist() {
+    setLookupBusy(true)
+    setLookupError('')
+    setCandidate(null)
+    const form = new FormData()
+    form.set('query', barcode.trim() ? '' : query.trim())
+    form.set('barcode', barcode.trim())
+    if (photo) form.set('image', photo)
+
+    try {
+      const response = await fetch('/api/product-assist', { method: 'POST', body: form })
+      const result = await response.json() as {
+        error?: string
+        source?: 'catalog' | 'ai'
+        product?: CatalogProduct
+        suggestion?: ProductSuggestion
+      }
+      if (!response.ok) {
+        setLookupError(result.error || t('productLookupFailed'))
+        return
+      }
+      if (result.source === 'catalog' && result.product) {
+        const imagePath = result.product.approved_image_path
+        let imageUrl: string | null = null
+        if (imagePath) {
+          const { data, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(imagePath, 3600)
+          if (imageError) {
+            setLookupError(imageError.message)
+            return
+          }
+          imageUrl = data.signedUrl
+        }
+        setCandidate({ source: 'catalog', product: result.product, imageUrl })
+        return
+      }
+      if (result.source === 'ai' && result.suggestion) {
+        setCandidate({ source: 'ai', suggestion: result.suggestion })
+        return
+      }
+      setLookupError(t('productLookupFailed'))
+    } catch (error) {
+      setLookupError(error instanceof Error ? error.message : t('productLookupFailed'))
+    } finally {
+      setLookupBusy(false)
+    }
+  }
+
+  function acceptCandidate() {
+    if (!candidate) return
+    if (candidate.source === 'catalog') {
+      chooseProduct(candidate.product)
+    } else {
+      setProduct(null)
+      setAiPrefill(candidate.suggestion)
+      setQuery(candidate.suggestion.name)
+      setBarcode(candidate.suggestion.barcode ?? barcode)
+      setCategoryIds(candidate.suggestion.category_slugs.flatMap((slug) => {
+        const category = categories.find((value) => value.slug === slug)
+        return category ? [category.id] : []
+      }))
+    }
+    setCandidate(null)
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -186,18 +278,20 @@ export function AddInventoryForm() {
       <div className="page-heading"><div><p className="eyebrow">{t('inventory')}</p><h1>{t('addItem')}</h1><p className="subtle">{t('addItemDescription')}</p></div></div>
       <form className="card inventory-form" onSubmit={submit}>
         <div className="catalog-search">
-          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setCategoryIds([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
+          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setCategoryIds([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
           <p className="field-hint">{t('catalogLookupHint')}</p>
           {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></button></li>)}</ul>}
+          {(query.trim().length >= 2 || barcode.trim() || photo) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t('searchingWithAi') : t('searchCatalogAndAi')}</button>}
+          {lookupError && <p role="alert" className="error-message">{lookupError}</p>}
         </div>
         {product && <p className="catalog-selected" role="status">{t('catalogProductSelected', { name: product.name })}<button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]) }}>{t('clear')}</button></p>}
         <div className="form-grid">
-          <label>{t('name')}<input name="name" required maxLength={160} defaultValue={product?.name ?? ''} key={`name-${product?.id ?? 'custom'}`} /></label>
-          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => setBarcode(event.target.value)} placeholder={t('barcodePlaceholder')} /></label>
+          <label>{t('name')}<input name="name" required maxLength={160} defaultValue={product?.name ?? aiPrefill?.name ?? ''} key={`name-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
+          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null) }} placeholder={t('barcodePlaceholder')} /></label>
           <label>{t('categories')}<select name="category_ids" multiple value={categoryIds} onChange={(event) => setCategoryIds([...event.target.selectedOptions].map((option) => option.value))} aria-describedby="category-selection-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="category-selection-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
-          <label>{t('brand')}<select name="brand_id" defaultValue={product?.brand_id ?? ''} key={`brand-${product?.id ?? 'custom'}`}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label>
-          <label className="field-wide">{t('description')}<textarea name="description" rows={4} maxLength={2000} defaultValue={product?.description ?? ''} key={`description-${product?.id ?? 'custom'}`} /></label>
-          <label>{t('presentation')}<select name="presentation" defaultValue={product?.presentation ?? 'individual'} key={`presentation-${product?.id ?? 'custom'}`}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label>
+          <label>{t('brand')}<select name="brand_id" defaultValue={product?.brand_id ?? brands.find((brand) => brand.name.toLocaleLowerCase() === aiPrefill?.brand?.toLocaleLowerCase())?.id ?? ''} key={`brand-${product?.id ?? aiPrefill?.name ?? 'custom'}`}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label>
+          <label className="field-wide">{t('description')}<textarea name="description" rows={4} maxLength={2000} defaultValue={product?.description ?? aiPrefill?.description ?? ''} key={`description-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
+          <label>{t('presentation')}<select name="presentation" defaultValue={product?.presentation ?? aiPrefill?.presentation ?? 'individual'} key={`presentation-${product?.id ?? aiPrefill?.name ?? 'custom'}`}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label>
           <label>{t('quantity')}<input name="quantity" type="number" min="0" step="1" defaultValue="1" required /></label>
           <label>{t('minimumQuantity')}<input name="min_quantity" type="number" min="0" step="1" defaultValue="1" required /></label>
           <label>{t('expiryDate')}<input name="expiry_date" type="date" /></label>
@@ -213,11 +307,39 @@ export function AddInventoryForm() {
             setPhoto(file)
           }} /><span className="field-hint">{t('approvedImageHint')}</span></label>
         </div>
+        {photo && <p className="field-hint">{t('photoLookupPrivacy')}</p>}
         {error && <p role="alert" className="error-message">{error}</p>}
         {message && <p role="status" className="success-message">{message}</p>}
         <div className="form-footer"><p className="field-hint">{t('expiryOptionalHint')}</p><button className="primary-button" type="submit" disabled={busy || !clinicId}>{busy ? t('saving') : t('saveItem')}</button></div>
       </form>
       {scannerOpen && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setScannerOpen(false)} />}
+      {candidate && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setCandidate(null) }}>
+        <section role="dialog" aria-modal="true" aria-labelledby="product-candidate-title" className="item-dialog card product-candidate-dialog">
+          <h2 id="product-candidate-title">{t('confirmProduct')}</h2>
+          <p className="subtle">{t(candidate.source === 'catalog' ? 'catalogVerifiedProduct' : 'aiSuggestionDisclaimer')}</p>
+          {candidate.source === 'catalog' && (candidate.imageUrl || photoPreview) && <img className="detail-image" src={candidate.imageUrl || photoPreview} alt={candidate.imageUrl ? candidate.product.name : t('uploadedProductPhoto')} />}
+          {candidate.source === 'ai' && photoPreview && <img className="detail-image" src={photoPreview} alt={t('uploadedProductPhoto')} />}
+          <dl className="detail-list">
+            <div><dt>{t('name')}</dt><dd>{candidate.source === 'catalog' ? candidate.product.name : candidate.suggestion.name}</dd></div>
+            <div><dt>{t('barcode')}</dt><dd>{(candidate.source === 'catalog' ? candidate.product.barcode : candidate.suggestion.barcode) || t('notProvided')}</dd></div>
+            <div><dt>{t('description')}</dt><dd>{(candidate.source === 'catalog' ? candidate.product.description : candidate.suggestion.description) || t('notProvided')}</dd></div>
+            <div><dt>{t('brand')}</dt><dd>{candidate.source === 'catalog'
+              ? brands.find((brand) => brand.id === candidate.product.brand_id)?.name || t('notProvided')
+              : candidate.suggestion.brand || t('notProvided')}</dd></div>
+            <div><dt>{t('categories')}</dt><dd>{candidate.source === 'catalog'
+              ? (candidate.product.category_ids ?? []).map((id) => {
+                const category = categories.find((value) => value.id === id)
+                return category ? locale === 'es' ? category.name_es : category.name_en : ''
+              }).filter(Boolean).join(', ') || t('uncategorized')
+              : candidate.suggestion.category_slugs.map((slug) => {
+                const category = categories.find((value) => value.slug === slug)
+                return category ? locale === 'es' ? category.name_es : category.name_en : ''
+              }).filter(Boolean).join(', ') || t('uncategorized')}</dd></div>
+            <div><dt>{t('presentation')}</dt><dd>{t(candidate.source === 'catalog' ? candidate.product.presentation : candidate.suggestion.presentation)}</dd></div>
+          </dl>
+          <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setCandidate(null)}>{t('rejectProduct')}</button><button type="button" className="primary-button" onClick={acceptCandidate}>{t('confirmProduct')}</button></div>
+        </section>
+      </div>}
     </section>
   )
 }

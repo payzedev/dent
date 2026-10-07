@@ -162,6 +162,142 @@
 			"command": "Test-Path scripts\\update-translations.tmp.js; Test-Path scripts\\add-translations.tmp.cjs",
 			"isBackground": false,
 			"problemMatcher": []
+		},
+		{
+			"label": "Validate SQL patch whitespace",
+			"type": "shell",
+			"command": "git",
+			"args": [
+				"diff",
+				"--check",
+				"--",
+				"scripts/001_schema.sql"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Locate signup implementation",
+			"type": "shell",
+			"command": "Get-ChildItem components,app -Recurse -File | Select-Object FullName",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect auth and NIM details",
+			"type": "shell",
+			"command": "Get-ChildItem app\\(auth) -Recurse -File | Select-Object FullName; Get-Content C:\\Users\\User\\AppData\\Local\\Temp\\1791341395706-copilot-tool-output-7a1bcb378e674297b473c6a948995c41.txt | Select-String -Pattern 'endpoint|base_url|chat/completions|image_url|API key|NVIDIA_API_KEY' -Context 0,2",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Find authentication files",
+			"type": "shell",
+			"command": "Get-ChildItem -LiteralPath 'app\\(auth)' -Recurse -File | Select-Object -ExpandProperty FullName",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Find NVIDIA request examples",
+			"type": "shell",
+			"command": "Get-Content 'C:\\Users\\User\\AppData\\Local\\Temp\\1791341395706-copilot-tool-output-7a1bcb378e674297b473c6a948995c41.txt' | Select-String -Pattern 'endpoint|base_url|chat/completions|image_url|API key|NVIDIA_API_KEY|curl' -Context 0,3",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect English message keys",
+			"type": "shell",
+			"command": "Get-Content messages\\en.json -Raw | ForEach-Object { $_.Substring([Math]::Max(0, $_.Length - 900)) }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect Spanish message keys",
+			"type": "shell",
+			"command": "Get-Content messages\\es.json -Raw | ForEach-Object { $_.Substring([Math]::Max(0, $_.Length - 900)) }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Update interface translations",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"scripts\\update-messages.tmp.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build password and AI changes",
+			"type": "shell",
+			"command": ".\\node_modules\\.bin\\next.cmd",
+			"args": [
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check changes and env files",
+			"type": "shell",
+			"command": "git diff --check; Get-ChildItem -Force -Name | Where-Object { $_ -match 'env|example' }; Get-ChildItem scripts -Filter '*.tmp.*'",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build final product lookup",
+			"type": "shell",
+			"command": ".\\node_modules\\.bin\\next.cmd",
+			"args": [
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Review working tree changes",
+			"type": "shell",
+			"command": "git status --short; git diff --stat; git diff -- .vscode/tasks.json package.json pnpm-lock.yaml",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Update photo privacy wording",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"scripts\\update-privacy-copy.tmp.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Verify DeepSeek integration build",
+			"type": "shell",
+			"command": ".\\node_modules\\.bin\\next.cmd",
+			"args": [
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Final diff and temp validation",
+			"type": "shell",
+			"command": "git diff --check -- README.md 'app/(auth)/signup/page.tsx' app/api/product-assist/route.ts app/globals.css components/add-inventory-form.tsx messages/en.json messages/es.json; Get-ChildItem scripts -Filter '*.tmp.*'; git status --short",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Final production verification",
+			"type": "shell",
+			"command": ".\\node_modules\\.bin\\next.cmd",
+			"args": [
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": []
 		}
 	]
 }
