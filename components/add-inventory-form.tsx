@@ -207,6 +207,12 @@ export function AddInventoryForm() {
       return
     }
 
+    if (!clinicId) {
+      setBusy(false)
+      setError(t('clinicNotConfigured'))
+      return
+    }
+
     let imagePath: string | null = null
     if (photo) {
       const extension = photo.type === 'image/png' ? 'png' : photo.type === 'image/webp' ? 'webp' : 'jpg'
