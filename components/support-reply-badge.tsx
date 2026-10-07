@@ -1,9 +1,11 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase/client'
 
 export function SupportReplyBadge({ initialCount }: { initialCount: number }) {
+  const t = useTranslations()
   const [count, setCount] = useState(initialCount)
 
   useEffect(() => {
@@ -28,5 +30,5 @@ export function SupportReplyBadge({ initialCount }: { initialCount: number }) {
     }
   }, [])
 
-  return count > 0 ? <span className="support-unread-badge" aria-label={`${count} unread support messages`}>{count > 99 ? '99+' : count}</span> : null
+  return count > 0 ? <span className="support-unread-badge" aria-label={t('unreadSupportMessages', { count })}>{count > 99 ? '99+' : count}</span> : null
 }

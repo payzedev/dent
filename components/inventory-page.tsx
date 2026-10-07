@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase/client'
+import { CategoryPicker } from '@/components/category-picker'
 import { SearchIcon, XIcon } from '@/components/icons'
 
 type Category = { id: string; slug: string; name_en: string; name_es: string; color_hex: string }
@@ -29,6 +30,8 @@ type InventoryItem = {
   color: string
 }
 
+const inventoryPageSize = 50
+
 export function InventoryPage() {
   const t = useTranslations()
   const locale = useLocale()
@@ -40,6 +43,8 @@ export function InventoryPage() {
   const [query, setQuery] = useState('')
   const [categoryFilter, setCategoryFilter] = useState('')
   const [statusFilter, setStatusFilter] = useState('')
+  const [page, setPage] = useState(0)
+  const [totalItems, setTotalItems] = useState(0)
   const [selected, setSelected] = useState<InventoryItem | null>(null)
   const [clinicId, setClinicId] = useState('')
   const [userId, setUserId] = useState('')
@@ -51,7 +56,13 @@ export function InventoryPage() {
     setError('')
     const [{ data: { user }, error: authError }, { data: rows, error: itemsError }, { data: categoryRows, error: categoryError }, { data: brandRows, error: brandError }] = await Promise.all([
       supabase.auth.getUser(),
-      supabase.from('inventory_items').select('id,name,description,quantity,min_quantity,expiry_date,status,created_at,barcode,image_path,category_id,brand_id,product_id,presentation,product_type,model,color').order('name'),
+      supabase.rpc('search_inventory', {
+        search_term: query,
+        category_filter: categoryFilter || null,
+        status_filter: statusFilter || null,
+        result_offset: page * inventoryPageSize,
+        result_limit: inventoryPageSize,
+      }),
       supabase.from('categories').select('id,slug,name_en,name_es,color_hex').eq('is_active', true).order('sort_order'),
       supabase.from('brands').select('id,name').order('name'),
     ])
@@ -65,7 +76,8 @@ export function InventoryPage() {
     if (profileError) { setError(profileError.message); return }
     setClinicId(profile.primary_clinic_id || '')
     setUserId(user.id)
-    const inventoryRows = (rows ?? []) as InventoryItem[]
+    const inventoryRows = (rows ?? []) as (InventoryItem & { total_count: number | string })[]
+    setTotalItems(Number(inventoryRows[0]?.total_count ?? 0))
     const itemIds = inventoryRows.map((item) => item.id)
     const { data: itemCategoryRows, error: itemCategoryError } = itemIds.length
       ? await supabase.from('inventory_item_categories').select('item_id,category_id').in('item_id', itemIds)
@@ -78,7 +90,7 @@ export function InventoryPage() {
     for (const row of itemCategoryRows ?? []) {
       categoryIdsByItem.set(row.item_id, [...(categoryIdsByItem.get(row.item_id) ?? []), row.category_id])
     }
-    const inventory = inventoryRows.map((item) => ({
+    const inventory = inventoryRows.map(({ total_count: _totalCount, ...item }) => ({
       ...item,
       category_ids: categoryIdsByItem.get(item.id) ?? (item.category_id ? [item.category_id] : []),
     }))
@@ -107,21 +119,27 @@ export function InventoryPage() {
       `/api/inventory-image?path=${encodeURIComponent(path)}&user=${encodeURIComponent(user.id)}`,
     ]))
     setImages(imageMap)
-  }, [supabase, t])
+  }, [categoryFilter, page, query, statusFilter, supabase, t])
 
-  useEffect(() => { void load() }, [load])
+  useEffect(() => {
+    const timer = window.setTimeout(() => void load(), 250)
+    return () => window.clearTimeout(timer)
+  }, [load])
 
-  const visibleItems = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase(locale)
-    return items.filter((item) => {
-      const categorySearchText = item.category_ids.map((id) => categories.find((value) => value.id === id)?.[locale === 'es' ? 'name_es' : 'name_en'] ?? '').join(' ')
-      const brand = brands.find((value) => value.id === item.brand_id)
-      const product = products.find((value) => value.id === item.product_id)
-      const matchesText = !normalized || [item.name, item.barcode ?? '', categorySearchText, brand?.name ?? '', product?.name ?? '']
-        .some((value) => value.toLocaleLowerCase(locale).includes(normalized))
-      return matchesText && (!categoryFilter || item.category_ids.includes(categoryFilter)) && (!statusFilter || item.status === statusFilter)
-    })
-  }, [items, categories, brands, products, query, categoryFilter, statusFilter, locale])
+  useEffect(() => {
+    if (page > 0 && page * inventoryPageSize >= totalItems) {
+      setPage(Math.max(0, Math.ceil(totalItems / inventoryPageSize) - 1))
+    }
+  }, [page, totalItems])
+
+  useEffect(() => {
+    if (!categories.length) return
+    const requestedCategory = new URLSearchParams(window.location.search).get('category')
+    const category = categories.find((value) => value.slug === requestedCategory || value.id === requestedCategory)
+    if (category) setCategoryFilter(category.id)
+  }, [categories])
+
+  const visibleItems = items
 
   const categoryNames = (ids: string[]) => {
     const names = ids.map((id) => categories.find((value) => value.id === id))
@@ -225,12 +243,12 @@ export function InventoryPage() {
   return (
     <section className="inventory-content">
       <div className="page-heading">
-        <div><p className="eyebrow">{t('inventory')}</p><h1>{t('inventoryTitle')}</h1><p className="subtle">{t('inventoryDescription', { count: items.length })}</p></div>
+        <div><p className="eyebrow">{t('inventory')}</p><h1>{t('inventoryTitle')}</h1><p className="subtle">{t('inventoryDescription', { count: totalItems })}</p></div>
       </div>
       <div className="inventory-filters">
-        <label className="search-field"><SearchIcon /><span className="sr-only">{t('searchInventory')}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('searchNameOrBarcode')} /></label>
-        <label><span className="sr-only">{t('category')}</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">{t('allCategories')}</option>{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select></label>
-        <label><span className="sr-only">{t('status')}</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">{t('allStatuses')}</option><option value="new">{t('new')}</option><option value="opened">{t('opened')}</option><option value="used">{t('used')}</option><option value="defective">{t('defective')}</option><option value="missing">{t('missing')}</option></select></label>
+        <label className="search-field"><SearchIcon /><span className="sr-only">{t('searchInventory')}</span><input value={query} onChange={(event) => { setPage(0); setQuery(event.target.value) }} placeholder={t('searchNameOrBarcode')} /></label>
+        <label><span className="sr-only">{t('category')}</span><select value={categoryFilter} onChange={(event) => { setPage(0); setCategoryFilter(event.target.value) }}><option value="">{t('allCategories')}</option>{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select></label>
+        <label><span className="sr-only">{t('status')}</span><select value={statusFilter} onChange={(event) => { setPage(0); setStatusFilter(event.target.value) }}><option value="">{t('allStatuses')}</option><option value="new">{t('new')}</option><option value="opened">{t('opened')}</option><option value="used">{t('used')}</option><option value="defective">{t('defective')}</option><option value="missing">{t('missing')}</option></select></label>
       </div>
       {error && <p role="alert" className="error-message">{error}</p>}
       {visibleItems.length ? <div className="inventory-grid">{visibleItems.map((item) => {
@@ -243,7 +261,12 @@ export function InventoryPage() {
           <span className="inventory-card-copy"><strong>{item.name}</strong><span>{categoryNames(item.category_ids)}</span><span>{t('quantityPresentation', { count: item.quantity, presentation: t(item.presentation) })}</span></span>
           <span className={`status-badge status-${item.status}`}>{t(item.status)}</span>
         </button>
-      })}</div> : <div className="card empty-state"><h2>{t('noItemsFound')}</h2><p className="subtle">{items.length ? t('adjustInventorySearch') : t('emptyInventoryDescription')}</p></div>}
+      })}</div> : <div className="card empty-state"><h2>{t('noItemsFound')}</h2><p className="subtle">{totalItems ? t('adjustInventorySearch') : t('emptyInventoryDescription')}</p></div>}
+      {totalItems > inventoryPageSize && <nav className="pagination-controls" aria-label={t('inventoryPagination')}>
+        <button type="button" className="secondary-button" disabled={page === 0} onClick={() => setPage((current) => Math.max(0, current - 1))}>{t('previousPage')}</button>
+        <span className="field-hint">{t('pageOf', { page: page + 1, total: Math.ceil(totalItems / inventoryPageSize) })}</span>
+        <button type="button" className="secondary-button" disabled={(page + 1) * inventoryPageSize >= totalItems} onClick={() => setPage((current) => current + 1)}>{t('nextPage')}</button>
+      </nav>}
 
       {selected && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setSelected(null) }}>
         <section role="dialog" aria-modal="true" aria-labelledby="item-dialog-title" className="item-dialog card">
@@ -274,7 +297,7 @@ export function InventoryPage() {
             <label>{t('barcode')}<input name="barcode" defaultValue={selected.barcode ?? ''} maxLength={128} /></label>
             <div className="form-row"><label>{t('productType')}<input name="product_type" defaultValue={selected.product_type} maxLength={120} /></label><label>{t('model')}<input name="model" defaultValue={selected.model} maxLength={120} /></label></div>
             <label>{t('color')}<input name="color" defaultValue={selected.color} maxLength={80} /></label>
-            <label>{t('categories')}<select name="category_ids" multiple defaultValue={selected.category_ids} size={Math.min(categories.length, 5)} aria-describedby="edit-category-selection-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="edit-category-selection-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
+            <CategoryPicker categories={categories} value={selected.category_ids} onChange={(category_ids) => setSelected({ ...selected, category_ids })} label={t('categories')} />
             <div className="form-row"><label>{t('brand')}<select name="brand_id" defaultValue={selected.brand_id ?? ''}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label><label>{t('presentation')}<select name="presentation" defaultValue={selected.presentation}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label></div>
             <div className="form-row"><label>{t('quantity')}<input name="quantity" type="number" min="0" defaultValue={selected.quantity} required /></label><label>{t('minimumQuantity')}<input name="min_quantity" type="number" min="0" defaultValue={selected.min_quantity} required /></label></div>
             <div className="form-row"><label>{t('expiryDate')}<input name="expiry_date" type="date" defaultValue={selected.expiry_date ?? ''} /></label><label>{t('status')}<select name="status" defaultValue={selected.status}><option value="new">{t('new')}</option><option value="opened">{t('opened')}</option><option value="used">{t('used')}</option><option value="defective">{t('defective')}</option><option value="missing">{t('missing')}</option></select></label></div>

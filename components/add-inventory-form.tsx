@@ -5,9 +5,10 @@ import { useRouter } from 'next/navigation'
 import { useLocale, useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase/client'
 import { BarcodeScanner } from '@/components/barcode-scanner'
+import { CategoryPicker } from '@/components/category-picker'
 import { ScanIcon, SearchIcon } from '@/components/icons'
 
-type Category = { id: string; slug: string; name_en: string; name_es: string }
+type Category = { id: string; slug: string; name_en: string; name_es: string; color_hex: string }
 type Brand = { id: string; name: string; clinic_id: string | null }
 type CatalogProduct = {
   id: string
@@ -97,7 +98,7 @@ export function AddInventoryForm() {
     async function initialize() {
       const [{ data: { user }, error: authError }, { data: categoryRows, error: categoryError }, { data: brandRows, error: brandError }] = await Promise.all([
         supabase.auth.getUser(),
-        supabase.from('categories').select('id,slug,name_en,name_es').eq('is_active', true).order('sort_order'),
+        supabase.from('categories').select('id,slug,name_en,name_es,color_hex').eq('is_active', true).order('sort_order'),
         supabase.from('brands').select('id,name,clinic_id').order('name'),
       ])
       if (cancelled) return
@@ -533,7 +534,7 @@ export function AddInventoryForm() {
       <div className="page-heading"><div><p className="eyebrow">{t('inventory')}</p><h1>{t('addItem')}</h1><p className="subtle">{t('addItemDescription')}</p></div></div>
       <form className="card inventory-form" onSubmit={submit}>
         <div className="catalog-search">
-          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setCategoryIds([]); setCandidates([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
+          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setBarcode(''); setProduct(null); setAiPrefill(null); setCategoryIds([]); setCandidates([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
           <p className="field-hint">{t('catalogLookupHint')}</p>
           {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}>{catalogImageUrls[result.id] ? <img src={catalogImageUrls[result.id]} alt="" loading="lazy" decoding="async" onError={() => setCatalogImageUrls((current) => ({ ...current, [result.id]: '' }))} /> : <span className="catalog-result-image" aria-hidden="true">✳</span>}<span className="catalog-result-copy"><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></span></button></li>)}</ul>}
           {(query.trim().length >= 2 || barcode.trim()) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t(lookupStep === 'catalog' ? 'searchingCatalog' : lookupStep === 'pharmacy' ? 'searchingPharmacies' : lookupStep === 'store' ? 'searchingStores' : 'searchingWithAi') : t('searchCatalogPharmacyAi')}</button>}
@@ -542,8 +543,8 @@ export function AddInventoryForm() {
         {product && <div className="catalog-selected" role="status">{catalogImageUrls[product.id] && <img src={catalogImageUrls[product.id]} alt={product.name} loading="lazy" decoding="async" onError={() => setCatalogImageUrls((current) => ({ ...current, [product.id]: '' }))} />}<span>{t('catalogProductSelected', { name: product.name })}</span><button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]); setBrandId(''); setNewBrandName('') }}>{t('clear')}</button></div>}
         <div className="form-grid">
           <label>{t('name')}<input name="name" required maxLength={160} defaultValue={product?.name ?? aiPrefill?.name ?? ''} key={`name-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
-          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null); setCandidates([]) }} placeholder={t('barcodePlaceholder')} /></label>
-          <label>{t('categories')}<select name="category_ids" multiple value={categoryIds} onChange={(event) => setCategoryIds([...event.target.selectedOptions].map((option) => option.value))} aria-describedby="category-selection-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="category-selection-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
+          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setQuery(''); setProduct(null); setAiPrefill(null); setCandidates([]) }} placeholder={t('barcodePlaceholder')} /></label>
+          <CategoryPicker categories={categories} value={categoryIds} onChange={setCategoryIds} label={t('categories')} />
           <label>{t('brand')}<select name="brand_id" value={brandId} onChange={(event) => { setBrandId(event.target.value); setNewBrandName('') }}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}{brand.clinic_id ? ` · ${t('clinicOnly')}` : ''}</option>)}</select></label>
           <div className="brand-create-control"><label>{t('brandName')}<input value={newBrandName} onChange={(event) => setNewBrandName(event.target.value)} maxLength={120} placeholder={aiPrefill?.brand || t('brandName')} /></label><button type="button" className="secondary-button" disabled={brandBusy || !newBrandName.trim()} onClick={() => void createClinicBrand()}>{brandBusy ? t('saving') : t('createBrand')}</button><span className="field-hint">{t('clinicBrandCreatedHint')}</span></div>
           <label className="field-wide">{t('description')}<textarea name="description" rows={4} maxLength={2000} defaultValue={product?.description ?? aiPrefill?.description ?? ''} key={`description-${prefillVersion}-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>

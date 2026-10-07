@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useLocale, useTranslations } from 'next-intl'
 import { createClient } from '@/lib/supabase/client'
+import { CategoryPicker } from '@/components/category-picker'
 
 type Category = { id: string; slug: string; name_en: string; name_es: string; color_hex: string; is_active: boolean; sort_order: number }
 type Brand = { id: string; name: string; clinic_id: string | null }
@@ -14,6 +15,7 @@ type ClinicItem = { id: string; clinic_id: string; owner_id: string; product_id:
 type Stats = { users: number; clinics: number; items: number; products: number; categories: number; brands: number; reports: number }
 
 const emptyStats: Stats = { users: 0, clinics: 0, items: 0, products: 0, categories: 0, brands: 0, reports: 0 }
+const adminPageSize = 50
 
 export function AdminConsole() {
   const t = useTranslations()
@@ -26,6 +28,9 @@ export function AdminConsole() {
   const [users, setUsers] = useState<User[]>([])
   const [clinics, setClinics] = useState<Clinic[]>([])
   const [clinicItems, setClinicItems] = useState<ClinicItem[]>([])
+  const [catalogPage, setCatalogPage] = useState(0)
+  const [clinicItemsPage, setClinicItemsPage] = useState(0)
+  const [usersPage, setUsersPage] = useState(0)
   const [tab, setTab] = useState<'overview' | 'clinics' | 'catalog' | 'users'>('overview')
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [adminProductImage, setAdminProductImage] = useState<File | null>(null)
@@ -62,10 +67,10 @@ export function AdminConsole() {
       supabase.from('support_reports').select('id', { count: 'exact', head: true }),
       supabase.from('categories').select('id,slug,name_en,name_es,color_hex,is_active,sort_order').order('sort_order'),
       supabase.from('brands').select('id,name,clinic_id').order('name'),
-      supabase.from('catalog_products').select('id,name,description,barcode,category_id,brand_id,approved_image_path,is_approved,presentation,product_type,model,color').order('name'),
-      supabase.from('profiles').select('id,email,full_name,clinic_name,status,created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('catalog_products').select('id,name,description,barcode,category_id,brand_id,approved_image_path,is_approved,presentation,product_type,model,color').order('name').order('id').range(catalogPage * adminPageSize, (catalogPage + 1) * adminPageSize - 1),
+      supabase.from('profiles').select('id,email,full_name,clinic_name,status,created_at').order('created_at', { ascending: false }).order('id').range(usersPage * adminPageSize, (usersPage + 1) * adminPageSize - 1),
       supabase.from('clinics').select('id,name').order('name'),
-      supabase.from('inventory_items').select('id,clinic_id,owner_id,product_id,name,description,barcode,category_id,brand_id,image_path,presentation,product_type,model,color,quantity,status').order('name'),
+      supabase.from('inventory_items').select('id,clinic_id,owner_id,product_id,name,description,barcode,category_id,brand_id,image_path,presentation,product_type,model,color,quantity,status').order('name').order('id').range(clinicItemsPage * adminPageSize, (clinicItemsPage + 1) * adminPageSize - 1),
     ])
     const productIds = (productRows ?? []).map((product) => product.id)
     const itemIds = (clinicItemRows ?? []).map((item) => item.id)
@@ -110,9 +115,15 @@ export function AdminConsole() {
       category_ids: categoryIdsByItem.get(item.id) ?? (item.category_id ? [item.category_id] : []),
       owner_name: ownerById.get(item.owner_id) || '',
     })))
-  }, [supabase])
+  }, [catalogPage, clinicItemsPage, supabase, usersPage])
 
   useEffect(() => { void load() }, [load])
+
+  useEffect(() => {
+    setCatalogPage((current) => Math.min(current, Math.max(0, Math.ceil(stats.products / adminPageSize) - 1)))
+    setClinicItemsPage((current) => Math.min(current, Math.max(0, Math.ceil(stats.items / adminPageSize) - 1)))
+    setUsersPage((current) => Math.min(current, Math.max(0, Math.ceil(stats.users / adminPageSize) - 1)))
+  }, [stats.items, stats.products, stats.users])
 
   async function searchAdminProduct(formElement: HTMLFormElement, analyzePhoto = false) {
     const form = new FormData(formElement)
@@ -370,8 +381,8 @@ export function AdminConsole() {
 
   return <section className="admin-content">
     <div className="page-heading admin-heading"><div><p className="eyebrow">{t('admin')}</p><h1>{t('adminTitle')}</h1><p className="subtle">{t('adminDescription')}</p></div><Link className="secondary-button" href="/support">{t('manageReports')} · {stats.reports}</Link></div>
-    <div className="admin-tabs" role="tablist" aria-label={t('adminSections')}>
-      {(['overview', 'clinics', 'catalog', 'users'] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={tab === value} className={tab === value ? 'admin-tab selected' : 'admin-tab'} onClick={() => setTab(value)}>{t(value === 'overview' ? 'overview' : value === 'clinics' ? 'clinics' : value === 'catalog' ? 'catalog' : 'users')}</button>)}
+    <div className="admin-tabs" role="group" aria-label={t('adminSections')}>
+      {(['overview', 'clinics', 'catalog', 'users'] as const).map((value) => <button key={value} type="button" aria-pressed={tab === value} className={tab === value ? 'admin-tab selected' : 'admin-tab'} onClick={() => setTab(value)}>{t(value === 'overview' ? 'overview' : value === 'clinics' ? 'clinics' : value === 'catalog' ? 'catalog' : 'users')}</button>)}
     </div>
     {tab === 'overview' && <div className="admin-stats">{([
       ['users', stats.users], ['clinics', stats.clinics], ['inventoryItems', stats.items], ['catalogProducts', stats.products], ['categories', stats.categories], ['brands', stats.brands], ['reports', stats.reports],
@@ -379,8 +390,8 @@ export function AdminConsole() {
     {tab === 'clinics' && <div className="clinic-review-list">{clinics.map((clinic) => {
       const items = clinicItems.filter((item) => item.clinic_id === clinic.id)
       return <section className="card admin-section" key={clinic.id}>
-        <div className="section-heading"><div><h2>{clinic.name}</h2><p className="subtle">{t('clinicProductsCount', { count: items.length })}</p></div></div>
-        {items.length === 0 ? <p className="subtle">{t('noClinicProducts')}</p> : <div className="table-wrap"><table><thead><tr><th>{t('name')}</th><th>{t('barcode')}</th><th>{t('brand')}</th><th>{t('quantity')}</th><th>{t('status')}</th><th>{t('catalog')}</th><th>{t('actions')}</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}>
+        <div className="section-heading"><div><h2>{clinic.name}</h2><p className="subtle">{t('productsOnPage', { count: items.length })}</p></div></div>
+        {items.length === 0 ? <p className="subtle">{t('noClinicProductsOnPage')}</p> : <div className="table-wrap"><table><thead><tr><th>{t('name')}</th><th>{t('barcode')}</th><th>{t('brand')}</th><th>{t('quantity')}</th><th>{t('status')}</th><th>{t('catalog')}</th><th>{t('actions')}</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}>
           <td><strong>{item.name}</strong><br /><span className="field-hint">{item.owner_name || t('unnamedUser')}</span></td>
           <td>{item.barcode || '—'}</td>
           <td>{brands.find((brand) => brand.id === item.brand_id)?.name || '—'}</td>
@@ -391,6 +402,11 @@ export function AdminConsole() {
         </tr>)}</tbody></table></div>}
       </section>
     })}</div>}
+    {tab === 'clinics' && stats.items > adminPageSize && <nav className="pagination-controls" aria-label={t('clinicProductsPagination')}>
+      <button type="button" className="secondary-button" disabled={clinicItemsPage === 0} onClick={() => setClinicItemsPage((current) => Math.max(0, current - 1))}>{t('previousPage')}</button>
+      <span className="field-hint">{t('pageOf', { page: clinicItemsPage + 1, total: Math.ceil(stats.items / adminPageSize) })}</span>
+      <button type="button" className="secondary-button" disabled={(clinicItemsPage + 1) * adminPageSize >= stats.items} onClick={() => setClinicItemsPage((current) => current + 1)}>{t('nextPage')}</button>
+    </nav>}
     {tab === 'catalog' && <div className="admin-management">
       <section className="card admin-section">
         <div className="section-heading"><div><h2>{t('globalProducts')}</h2><p className="subtle">{t('catalogAdminDescription')}</p></div><button type="button" className="primary-button" onClick={() => { setAdminProductImage(null); setSelectedProduct({ id: '', name: '', description: '', barcode: null, category_id: null, category_ids: [], brand_id: null, approved_image_path: null, is_approved: false, presentation: 'individual', product_type: '', model: '', color: '' }) }}>{t('createProduct')}</button></div>
@@ -399,7 +415,7 @@ export function AdminConsole() {
           <div className="form-grid">
             <label>{t('name')}<input name="name" defaultValue={selectedProduct.name} required maxLength={160} key={`pname-${selectedProduct.id}`} /></label>
             <label>{t('barcode')}<input name="barcode" defaultValue={selectedProduct.barcode ?? ''} maxLength={128} key={`pbarcode-${selectedProduct.id}`} /></label>
-            <label>{t('categories')}<select name="category_ids" multiple value={selectedProduct.category_ids} onChange={(event) => setSelectedProduct({ ...selectedProduct, category_ids: [...event.target.selectedOptions].map((option) => option.value) })} size={Math.min(categories.length, 5)} aria-describedby="product-category-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="product-category-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
+            <CategoryPicker categories={categories} value={selectedProduct.category_ids} onChange={(category_ids) => setSelectedProduct({ ...selectedProduct, category_ids })} label={t('categories')} />
             <label>{t('brand')}<select name="brand_id" defaultValue={selectedProduct.brand_id ?? ''} key={`pbrand-${selectedProduct.id}`}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label>
             <label>{t('presentation')}<select name="presentation" defaultValue={selectedProduct.presentation} key={`ppresentation-${selectedProduct.id}`}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label>
             <label>{t('productType')}<input name="product_type" defaultValue={selectedProduct.product_type} maxLength={120} /></label>
@@ -426,6 +442,11 @@ export function AdminConsole() {
           <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => { setAdminProductImage(null); setSelectedProduct(null) }}>{t('cancel')}</button><button className="primary-button" disabled={busy}>{busy ? t('saving') : t('saveChanges')}</button></div>
         </form>}
         <div className="table-wrap"><table><thead><tr><th>{t('name')}</th><th>{t('barcode')}</th><th>{t('brand')}</th><th>{t('approval')}</th><th>{t('actions')}</th></tr></thead><tbody>{products.map((product) => <tr key={product.id}><td>{product.name}</td><td>{product.barcode || '—'}</td><td>{brands.find((brand) => brand.id === product.brand_id)?.name || '—'}</td><td><span className={`status-badge ${product.is_approved ? 'status-new' : 'status-missing'}`}>{t(product.is_approved ? 'approved' : 'pendingApproval')}</span></td><td><button className="text-button" type="button" onClick={() => { setAdminProductImage(null); setSelectedProduct(product) }}>{t('edit')}</button><button className="text-button danger-text" type="button" onClick={() => void deleteProduct(product)}>{t('delete')}</button></td></tr>)}</tbody></table></div>
+        {stats.products > adminPageSize && <nav className="pagination-controls" aria-label={t('catalogPagination')}>
+          <button type="button" className="secondary-button" disabled={catalogPage === 0} onClick={() => setCatalogPage((current) => Math.max(0, current - 1))}>{t('previousPage')}</button>
+          <span className="field-hint">{t('pageOf', { page: catalogPage + 1, total: Math.ceil(stats.products / adminPageSize) })}</span>
+          <button type="button" className="secondary-button" disabled={(catalogPage + 1) * adminPageSize >= stats.products} onClick={() => setCatalogPage((current) => current + 1)}>{t('nextPage')}</button>
+        </nav>}
       </section>
       <section className="card admin-section">
         <div className="section-heading"><div><h2>{t('manageCategories')}</h2><p className="subtle">{t('categoryAdminDescription')}</p></div></div>
@@ -438,7 +459,13 @@ export function AdminConsole() {
         <ul className="brand-list">{brands.map((brand) => <li key={brand.id}><form className="brand-edit-form" onSubmit={(event) => void editBrand(event, brand)}><input name="name" defaultValue={brand.name} required maxLength={120} aria-label={t('brandName')} /><span className={`status-badge ${brand.clinic_id ? 'status-missing' : 'status-new'}`}>{t(brand.clinic_id ? 'clinicOnly' : 'global')}</span><button className="text-button" type="submit">{t('saveChanges')}</button>{brand.clinic_id && <button className="text-button" type="button" onClick={() => void makeBrandGlobal(brand)}>{t('makeGlobal')}</button>}<button className="text-button danger-text" type="button" onClick={() => void deleteBrand(brand)}>{t('delete')}</button></form></li>)}</ul>
       </section>
     </div>}
-    {tab === 'users' && <section className="card admin-section"><h2>{t('users')}</h2><p className="subtle">{t('userAdminDescription')}</p><div className="table-wrap"><table><thead><tr><th>{t('user')}</th><th>{t('clinic')}</th><th>{t('registeredAt')}</th><th>{t('status')}</th><th>{t('actions')}</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><strong>{user.full_name || t('unnamedUser')}</strong><br /><span className="field-hint">{user.email}</span></td><td>{user.clinic_name || '—'}</td><td>{new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }).format(new Date(user.created_at))}</td><td>{t(user.status === 'suspended' ? 'suspended' : 'active')}</td><td><button className="text-button" type="button" onClick={() => void toggleUser(user)}>{t(user.status === 'suspended' ? 'reactivate' : 'suspend')}</button></td></tr>)}</tbody></table></div></section>}
+    {tab === 'users' && <section className="card admin-section"><h2>{t('users')}</h2><p className="subtle">{t('userAdminDescription')}</p><div className="table-wrap"><table><thead><tr><th>{t('user')}</th><th>{t('clinic')}</th><th>{t('registeredAt')}</th><th>{t('status')}</th><th>{t('actions')}</th></tr></thead><tbody>{users.map((user) => <tr key={user.id}><td><strong>{user.full_name || t('unnamedUser')}</strong><br /><span className="field-hint">{user.email}</span></td><td>{user.clinic_name || '—'}</td><td>{new Intl.DateTimeFormat(locale, { dateStyle: 'medium' }).format(new Date(user.created_at))}</td><td>{t(user.status === 'suspended' ? 'suspended' : 'active')}</td><td><button className="text-button" type="button" onClick={() => void toggleUser(user)}>{t(user.status === 'suspended' ? 'reactivate' : 'suspend')}</button></td></tr>)}</tbody></table></div>
+      {stats.users > adminPageSize && <nav className="pagination-controls" aria-label={t('usersPagination')}>
+        <button type="button" className="secondary-button" disabled={usersPage === 0} onClick={() => setUsersPage((current) => Math.max(0, current - 1))}>{t('previousPage')}</button>
+        <span className="field-hint">{t('pageOf', { page: usersPage + 1, total: Math.ceil(stats.users / adminPageSize) })}</span>
+        <button type="button" className="secondary-button" disabled={(usersPage + 1) * adminPageSize >= stats.users} onClick={() => setUsersPage((current) => current + 1)}>{t('nextPage')}</button>
+      </nav>}
+    </section>}
     {error && <p role="alert" className="error-message">{error}</p>}
     {notice && <p role="status" className="success-message">{notice}</p>}
   </section>

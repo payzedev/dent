@@ -30,6 +30,8 @@ textarea{resize:vertical;min-height:92px}
 input:disabled{background:#F4F6FA;color:#667085}
 label{display:grid;gap:7px;color:var(--ink);font-size:13px;font-weight:650}
 .inventory-filters select{height:48px}
+.pagination-controls{display:flex;align-items:center;justify-content:center;gap:14px;margin:24px 0}
+.pagination-controls .secondary-button{min-width:128px}
 .inventory-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
 .inventory-card{position:relative;display:grid;grid-template-columns:76px minmax(0,1fr);gap:14px;align-items:center;width:100%;min-height:112px;padding:15px;text-align:left;color:var(--ink);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease}
 .inventory-card:hover{transform:translateY(-2px);border-color:#CDD9E8;box-shadow:0 14px 30px #3b4a6b12}
@@ -223,6 +225,8 @@ td .text-button{padding-left:0}
   .inline-admin-form input,.inline-admin-form button{width:100%}
   .admin-tabs{justify-content:space-between}
   .admin-tab{flex:1;padding:10px 7px}
+  .pagination-controls{gap:8px}
+  .pagination-controls .secondary-button{min-width:0;padding:10px 12px}
   .dialog-actions{flex-wrap:wrap}
   .dialog-actions>*{flex:1}
 }

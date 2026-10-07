@@ -13,7 +13,7 @@ DentaStock is a bilingual (English/Spanish), responsive dental-clinic inventory 
    - `GEMINI_API_KEY` (server-only Google AI Studio key; never use a `NEXT_PUBLIC_` prefix)
 2. Enable **Confirm email** in Supabase Auth.
 3. Apply the SQL scripts in order on a fresh database:
-   `scripts/001_schema.sql`, `scripts/002_rls_policies.sql`, `scripts/003_clinics_catalog_support.sql`, `scripts/004_clinic_invitation_hardening.sql`, `scripts/005_product_categories_and_presentations.sql`, `scripts/006_resolved_report_replies.sql`, `scripts/007_support_reply_notifications.sql`, `scripts/008_inventory_product_conditions.sql`, and `scripts/009_product_photo_and_clinic_brands.sql`.
+   `scripts/001_schema.sql`, `scripts/002_rls_policies.sql`, `scripts/003_clinics_catalog_support.sql`, `scripts/004_clinic_invitation_hardening.sql`, `scripts/005_product_categories_and_presentations.sql`, `scripts/006_resolved_report_replies.sql`, `scripts/007_support_reply_notifications.sql`, `scripts/008_inventory_product_conditions.sql`, `scripts/009_product_photo_and_clinic_brands.sql`, and `scripts/010_search_indexes_and_brand_normalization.sql`.
    On an existing database, apply whichever later scripts have not already been run.
 4. Add `remgoficial@gmail.com` as the administrator account and confirm its email. Admin access is checked against the authenticated Supabase account email in the database; do not assign admin privileges to another profile manually.
 5. Clinic owners can invite staff from **Profile → Clinic team**. This requires a server-only `SUPABASE_SERVICE_ROLE_KEY` so the server can send Supabase Auth invitations. Never expose this key through a `NEXT_PUBLIC_` variable or browser code.
@@ -24,6 +24,7 @@ The third and fourth SQL scripts create the per-clinic membership model, product
 
 - The home screen totals stock units for the user's primary clinic; the molar distribution is grouped by category.
 - Inventory supports name/barcode search, one or more categories per item, category/status filters, item details, edits and quantity adjustments. Clinic inventory can track products as new, opened, used, defective or missing.
+- Inventory and admin product, clinic-item and user lists are paginated; inventory search and filters run in the database.
 - Products can be tracked as individual items, sets or boxes; the selected presentation is reflected with the available quantity.
 - The add-item form can scan a barcode with the device camera or accept a typed barcode; camera access requires HTTPS and browser permission. Approved product details, categories, presentation and images are reused unless the clinic uploads its own image.
 - Product searches use one sequence across the approved catalog, six pharmacies, Amazon, AliExpress, Alibaba, Blue Dental Venezuela, DYM Students and Dentaltix, then AI. Search results offer up to three suggestions per source type with any available product photos; product images selected from a result are copied into the clinic's private inventory storage. Pharmacy product-page results are matched and ranked, and the highest-ranked pharmacy match pre-fills the form while alternatives remain available for selection. Users can search by product name or barcode and take a photo with the device camera or choose one from storage.
