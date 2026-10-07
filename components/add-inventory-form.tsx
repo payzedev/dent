@@ -30,7 +30,8 @@ type ProductSuggestion = {
 }
 type ProductCandidate =
   | { source: 'catalog'; product: CatalogProduct; imageUrl: string | null }
-  | { source: 'ai'; suggestion: ProductSuggestion }
+  | { source: 'ai'; suggestion: ProductSuggestion; sources?: { title: string; url: string }[] }
+  | { source: 'exa'; suggestion: ProductSuggestion; sources: { title: string; url: string }[] }
 
 export function AddInventoryForm() {
   const t = useTranslations()
@@ -136,9 +137,10 @@ export function AddInventoryForm() {
       const response = await fetch('/api/product-assist', { method: 'POST', body: form })
       const result = await response.json() as {
         error?: string
-        source?: 'catalog' | 'ai'
+        source?: 'catalog' | 'ai' | 'exa'
         product?: CatalogProduct
         suggestion?: ProductSuggestion
+        sources?: { title: string; url: string }[]
       }
       if (!response.ok) {
         setLookupError(result.error || t('productLookupFailed'))
@@ -159,7 +161,11 @@ export function AddInventoryForm() {
         return
       }
       if (result.source === 'ai' && result.suggestion) {
-        setCandidate({ source: 'ai', suggestion: result.suggestion })
+        setCandidate({ source: 'ai', suggestion: result.suggestion, sources: result.sources ?? [] })
+        return
+      }
+      if (result.source === 'exa' && result.suggestion) {
+        setCandidate({ source: 'exa', suggestion: result.suggestion, sources: result.sources ?? [] })
         return
       }
       setLookupError(t('productLookupFailed'))
@@ -316,9 +322,9 @@ export function AddInventoryForm() {
       {candidate && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setCandidate(null) }}>
         <section role="dialog" aria-modal="true" aria-labelledby="product-candidate-title" className="item-dialog card product-candidate-dialog">
           <h2 id="product-candidate-title">{t('confirmProduct')}</h2>
-          <p className="subtle">{t(candidate.source === 'catalog' ? 'catalogVerifiedProduct' : 'aiSuggestionDisclaimer')}</p>
+          <p className="subtle">{t(candidate.source === 'catalog' ? 'catalogVerifiedProduct' : candidate.source === 'exa' ? 'exaSuggestionDisclaimer' : 'aiSuggestionDisclaimer')}</p>
           {candidate.source === 'catalog' && (candidate.imageUrl || photoPreview) && <img className="detail-image" src={candidate.imageUrl || photoPreview} alt={candidate.imageUrl ? candidate.product.name : t('uploadedProductPhoto')} />}
-          {candidate.source === 'ai' && photoPreview && <img className="detail-image" src={photoPreview} alt={t('uploadedProductPhoto')} />}
+          {candidate.source !== 'catalog' && photoPreview && <img className="detail-image" src={photoPreview} alt={t('uploadedProductPhoto')} />}
           <dl className="detail-list">
             <div><dt>{t('name')}</dt><dd>{candidate.source === 'catalog' ? candidate.product.name : candidate.suggestion.name}</dd></div>
             <div><dt>{t('barcode')}</dt><dd>{(candidate.source === 'catalog' ? candidate.product.barcode : candidate.suggestion.barcode) || t('notProvided')}</dd></div>
@@ -337,6 +343,7 @@ export function AddInventoryForm() {
               }).filter(Boolean).join(', ') || t('uncategorized')}</dd></div>
             <div><dt>{t('presentation')}</dt><dd>{t(candidate.source === 'catalog' ? candidate.product.presentation : candidate.suggestion.presentation)}</dd></div>
           </dl>
+          {candidate.source !== 'catalog' && (candidate.source === 'exa' ? candidate.sources : candidate.sources ?? []).length > 0 && <div className="exa-sources"><strong>{t('webSources')}</strong><ul>{(candidate.source === 'exa' ? candidate.sources : candidate.sources ?? []).map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul></div>}
           <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setCandidate(null)}>{t('rejectProduct')}</button><button type="button" className="primary-button" onClick={acceptCandidate}>{t('confirmProduct')}</button></div>
         </section>
       </div>}
