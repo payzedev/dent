@@ -44,6 +44,9 @@ export function SupportCenter() {
       const { data: replyRows, error: repliesError } = await supabase.from('support_replies').select('id,report_id,author_id,message,created_at').eq('report_id', current).order('created_at')
       if (repliesError) { setError(repliesError.message); return }
       setReplies((replyRows ?? []) as Reply[])
+      const { error: readError } = await supabase.rpc('mark_support_replies_read', { target_report: current })
+      if (readError) { setError(readError.message); return }
+      window.dispatchEvent(new Event('support-replies-read'))
       const report = reportRows.find((row) => row.id === current)
       if (report?.image_path) {
         const { data: signedImage, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(report.image_path, 3600)

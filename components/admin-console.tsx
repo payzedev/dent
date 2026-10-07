@@ -7,8 +7,10 @@ import { createClient } from '@/lib/supabase/client'
 
 type Category = { id: string; slug: string; name_en: string; name_es: string; color_hex: string; is_active: boolean; sort_order: number }
 type Brand = { id: string; name: string }
-type Product = { id: string; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; approved_image_path: string | null; is_approved: boolean; presentation: 'individual' | 'set' | 'box' }
+type Product = { id: string; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; approved_image_path: string | null; is_approved: boolean; presentation: 'individual' | 'set' | 'box'; sourceInventoryItemId?: string }
 type User = { id: string; email: string | null; full_name: string; clinic_name: string; status: string; created_at: string }
+type Clinic = { id: string; name: string }
+type ClinicItem = { id: string; clinic_id: string; owner_id: string; product_id: string | null; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; image_path: string | null; presentation: 'individual' | 'set' | 'box'; quantity: number; owner_name: string }
 type Stats = { users: number; clinics: number; items: number; products: number; categories: number; brands: number; reports: number }
 
 const emptyStats: Stats = { users: 0, clinics: 0, items: 0, products: 0, categories: 0, brands: 0, reports: 0 }
@@ -22,8 +24,13 @@ export function AdminConsole() {
   const [brands, setBrands] = useState<Brand[]>([])
   const [products, setProducts] = useState<Product[]>([])
   const [users, setUsers] = useState<User[]>([])
-  const [tab, setTab] = useState<'overview' | 'catalog' | 'users'>('overview')
+  const [clinics, setClinics] = useState<Clinic[]>([])
+  const [clinicItems, setClinicItems] = useState<ClinicItem[]>([])
+  const [tab, setTab] = useState<'overview' | 'clinics' | 'catalog' | 'users'>('overview')
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
+  const [adminLookupBusy, setAdminLookupBusy] = useState(false)
+  const [adminLookupError, setAdminLookupError] = useState('')
+  const [adminLookupSources, setAdminLookupSources] = useState<{ title: string; url: string }[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -42,6 +49,8 @@ export function AdminConsole() {
       { data: brandRows, error: brandsError },
       { data: productRows, error: productsError },
       { data: userRows, error: usersError },
+      { data: clinicRows, error: clinicsError },
+      { data: clinicItemRows, error: clinicItemsError },
     ] = await Promise.all([
       supabase.from('profiles').select('id', { count: 'exact', head: true }),
       supabase.from('clinics').select('id', { count: 'exact', head: true }),
@@ -54,12 +63,28 @@ export function AdminConsole() {
       supabase.from('brands').select('id,name').order('name'),
       supabase.from('catalog_products').select('id,name,description,barcode,category_id,brand_id,approved_image_path,is_approved,presentation').order('name'),
       supabase.from('profiles').select('id,email,full_name,clinic_name,status,created_at').order('created_at', { ascending: false }).limit(100),
+      supabase.from('clinics').select('id,name').order('name'),
+      supabase.from('inventory_items').select('id,clinic_id,owner_id,product_id,name,description,barcode,category_id,brand_id,image_path,presentation,quantity').order('name'),
     ])
     const productIds = (productRows ?? []).map((product) => product.id)
-    const { data: productCategoryRows, error: productCategoriesError } = productIds.length
+    const itemIds = (clinicItemRows ?? []).map((item) => item.id)
+    const ownerIds = [...new Set((clinicItemRows ?? []).map((item) => item.owner_id))]
+    const [
+      { data: productCategoryRows, error: productCategoriesError },
+      { data: itemCategoryRows, error: itemCategoriesError },
+      { data: ownerRows, error: ownersError },
+    ] = await Promise.all([
+      productIds.length
       ? await supabase.from('catalog_product_categories').select('product_id,category_id').in('product_id', productIds)
-      : { data: [], error: null }
-    const failure = userError || clinicError || itemError || productError || categoryError || brandError || reportError || categoriesError || brandsError || productsError || usersError || productCategoriesError
+      : Promise.resolve({ data: [], error: null }),
+      itemIds.length
+        ? supabase.from('inventory_item_categories').select('item_id,category_id').in('item_id', itemIds)
+        : Promise.resolve({ data: [], error: null }),
+      ownerIds.length
+        ? supabase.from('profiles').select('id,full_name,email').in('id', ownerIds)
+        : Promise.resolve({ data: [], error: null }),
+    ])
+    const failure = userError || clinicError || itemError || productError || categoryError || brandError || reportError || categoriesError || brandsError || productsError || usersError || clinicsError || clinicItemsError || productCategoriesError || itemCategoriesError || ownersError
     if (failure) { setError(failure.message); return }
     setStats({ users: userCount ?? 0, clinics: clinicCount ?? 0, items: itemCount ?? 0, products: productCount ?? 0, categories: categoryCount ?? 0, brands: brandCount ?? 0, reports: reportCount ?? 0 })
     setCategories((categoryRows ?? []) as Category[])
@@ -73,9 +98,100 @@ export function AdminConsole() {
       category_ids: categoryIdsByProduct.get(product.id) ?? (product.category_id ? [product.category_id] : []),
     })))
     setUsers((userRows ?? []) as User[])
+    setClinics((clinicRows ?? []) as Clinic[])
+    const categoryIdsByItem = new Map<string, string[]>()
+    for (const row of itemCategoryRows ?? []) {
+      categoryIdsByItem.set(row.item_id, [...(categoryIdsByItem.get(row.item_id) ?? []), row.category_id])
+    }
+    const ownerById = new Map((ownerRows ?? []).map((owner) => [owner.id, owner.full_name || owner.email || '']))
+    setClinicItems(((clinicItemRows ?? []) as Omit<ClinicItem, 'category_ids' | 'owner_name'>[]).map((item) => ({
+      ...item,
+      category_ids: categoryIdsByItem.get(item.id) ?? (item.category_id ? [item.category_id] : []),
+      owner_name: ownerById.get(item.owner_id) || '',
+    })))
   }, [supabase])
 
   useEffect(() => { void load() }, [load])
+
+  async function searchAdminProduct(formElement: HTMLFormElement) {
+    const form = new FormData(formElement)
+    const name = String(form.get('name') ?? '').trim()
+    const barcode = String(form.get('barcode') ?? '').trim()
+    if (!name && !barcode) {
+      setAdminLookupError(t('adminAiSearchPrompt'))
+      return
+    }
+    setAdminLookupBusy(true)
+    setAdminLookupError('')
+    setAdminLookupSources([])
+    const request = new FormData()
+    request.set('query', name)
+    request.set('barcode', barcode)
+    try {
+      const response = await fetch('/api/product-assist', { method: 'POST', body: request })
+      const result = await response.json() as {
+        error?: string
+        source?: 'catalog' | 'ai' | 'exa'
+        product?: Product
+        suggestion?: { name: string; description: string; barcode: string | null; brand: string | null; category_slugs: string[]; presentation: Product['presentation'] }
+        sources?: { title: string; url: string }[]
+      }
+      if (!response.ok) {
+        setAdminLookupError(result.error || t('productLookupFailed'))
+        return
+      }
+      setAdminLookupSources(result.sources ?? [])
+      if (result.source === 'catalog' && result.product) {
+        setSelectedProduct({ ...result.product, is_approved: result.product.is_approved ?? true })
+        return
+      }
+      if ((result.source === 'ai' || result.source === 'exa') && result.suggestion) {
+        const suggestion = result.suggestion
+        const categoryIds = suggestion.category_slugs.flatMap((slug) => {
+          const category = categories.find((value) => value.slug === slug)
+          return category ? [category.id] : []
+        })
+        setSelectedProduct({
+          id: '',
+          name: suggestion.name,
+          description: suggestion.description,
+          barcode: suggestion.barcode,
+          category_id: categoryIds[0] ?? null,
+          category_ids: categoryIds,
+          brand_id: brands.find((brand) => brand.name.toLocaleLowerCase() === suggestion.brand?.toLocaleLowerCase())?.id ?? null,
+          approved_image_path: null,
+          is_approved: false,
+          presentation: suggestion.presentation,
+          sourceInventoryItemId: selectedProduct?.sourceInventoryItemId,
+        })
+        return
+      }
+      setAdminLookupError(t('productLookupFailed'))
+    } catch (error) {
+      setAdminLookupError(error instanceof Error ? error.message : t('productLookupFailed'))
+    } finally {
+      setAdminLookupBusy(false)
+    }
+  }
+
+  function reviewClinicItem(item: ClinicItem) {
+    setSelectedProduct({
+      id: '',
+      name: item.name,
+      description: item.description,
+      barcode: item.barcode,
+      category_id: item.category_id,
+      category_ids: item.category_ids,
+      brand_id: item.brand_id,
+      approved_image_path: null,
+      is_approved: false,
+      presentation: item.presentation,
+      sourceInventoryItemId: item.product_id ? undefined : item.id,
+    })
+    setAdminLookupSources([])
+    setAdminLookupError('')
+    setTab('catalog')
+  }
 
   async function saveProduct(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -99,12 +215,12 @@ export function AdminConsole() {
       description: String(form.get('description')).trim(),
       barcode: String(form.get('barcode')).trim() || null,
       category_id: categoryIds[0] || null,
-      brand_id: String(form.get('brand_id')) || null,
+      brand_id: String(form.get('brand_id') || '') || null,
       presentation: String(form.get('presentation') || 'individual') as Product['presentation'],
       approved_image_path: imagePath,
       is_approved: form.get('is_approved') === 'on',
     }
-    const result = selectedProduct
+    const result = selectedProduct?.id
       ? await supabase.from('catalog_products').update(values).eq('id', selectedProduct.id).select('id').single()
       : await supabase.from('catalog_products').insert(values).select('id').single()
     if (result.error) { setBusy(false); setError(result.error.message); return }
@@ -113,6 +229,15 @@ export function AdminConsole() {
       target_categories: categoryIds,
     })
     if (categoryError) { setBusy(false); setError(categoryError.message); return }
+    if (selectedProduct?.sourceInventoryItemId) {
+      const { error: linkError } = await supabase.from('inventory_items').update({ product_id: result.data.id }).eq('id', selectedProduct.sourceInventoryItemId)
+      if (linkError) {
+        setSelectedProduct({ ...selectedProduct, id: result.data.id })
+        setBusy(false)
+        setError(`${t('catalogProductSaved')} ${t('catalogLinkFailed')}: ${linkError.message}`)
+        return
+      }
+    }
     setBusy(false)
     setSelectedProduct(null); setNotice(t('catalogProductSaved'))
     await load()
@@ -211,15 +336,29 @@ export function AdminConsole() {
   return <section className="admin-content">
     <div className="page-heading admin-heading"><div><p className="eyebrow">{t('admin')}</p><h1>{t('adminTitle')}</h1><p className="subtle">{t('adminDescription')}</p></div><Link className="secondary-button" href="/support">{t('manageReports')} · {stats.reports}</Link></div>
     <div className="admin-tabs" role="tablist" aria-label={t('adminSections')}>
-      {(['overview', 'catalog', 'users'] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={tab === value} className={tab === value ? 'admin-tab selected' : 'admin-tab'} onClick={() => setTab(value)}>{t(value === 'overview' ? 'overview' : value === 'catalog' ? 'catalog' : 'users')}</button>)}
+      {(['overview', 'clinics', 'catalog', 'users'] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={tab === value} className={tab === value ? 'admin-tab selected' : 'admin-tab'} onClick={() => setTab(value)}>{t(value === 'overview' ? 'overview' : value === 'clinics' ? 'clinics' : value === 'catalog' ? 'catalog' : 'users')}</button>)}
     </div>
     {tab === 'overview' && <div className="admin-stats">{([
       ['users', stats.users], ['clinics', stats.clinics], ['inventoryItems', stats.items], ['catalogProducts', stats.products], ['categories', stats.categories], ['brands', stats.brands], ['reports', stats.reports],
     ] as const).map(([label, count]) => <article className="card admin-stat" key={label}><span>{t(label)}</span><strong>{count}</strong></article>)}</div>}
+    {tab === 'clinics' && <div className="clinic-review-list">{clinics.map((clinic) => {
+      const items = clinicItems.filter((item) => item.clinic_id === clinic.id)
+      return <section className="card admin-section" key={clinic.id}>
+        <div className="section-heading"><div><h2>{clinic.name}</h2><p className="subtle">{t('clinicProductsCount', { count: items.length })}</p></div></div>
+        {items.length === 0 ? <p className="subtle">{t('noClinicProducts')}</p> : <div className="table-wrap"><table><thead><tr><th>{t('name')}</th><th>{t('barcode')}</th><th>{t('brand')}</th><th>{t('quantity')}</th><th>{t('catalog')}</th><th>{t('actions')}</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}>
+          <td><strong>{item.name}</strong><br /><span className="field-hint">{item.owner_name || t('unnamedUser')}</span></td>
+          <td>{item.barcode || '—'}</td>
+          <td>{brands.find((brand) => brand.id === item.brand_id)?.name || '—'}</td>
+          <td>{item.quantity}</td>
+          <td>{item.product_id ? t('linkedToCatalog') : t('pendingCatalogReview')}</td>
+          <td><button className="text-button" type="button" onClick={() => reviewClinicItem(item)}>{item.product_id ? t('viewProduct') : t('addToCatalog')}</button></td>
+        </tr>)}</tbody></table></div>}
+      </section>
+    })}</div>}
     {tab === 'catalog' && <div className="admin-management">
       <section className="card admin-section">
         <div className="section-heading"><div><h2>{t('globalProducts')}</h2><p className="subtle">{t('catalogAdminDescription')}</p></div><button type="button" className="primary-button" onClick={() => setSelectedProduct({ id: '', name: '', description: '', barcode: null, category_id: null, category_ids: [], brand_id: null, approved_image_path: null, is_approved: false, presentation: 'individual' })}>{t('createProduct')}</button></div>
-        {selectedProduct && <form className="admin-product-form" onSubmit={(event) => void saveProduct(event)}>
+        {selectedProduct && <form key={`admin-product-${selectedProduct.id}-${selectedProduct.name}-${selectedProduct.barcode ?? ''}`} className="admin-product-form" onSubmit={(event) => void saveProduct(event)}>
           <h3>{selectedProduct.id ? t('editProduct') : t('createProduct')}</h3>
           <div className="form-grid">
             <label>{t('name')}<input name="name" defaultValue={selectedProduct.name} required maxLength={160} key={`pname-${selectedProduct.id}`} /></label>
@@ -230,6 +369,15 @@ export function AdminConsole() {
             <label className="field-wide">{t('description')}<textarea name="description" rows={3} defaultValue={selectedProduct.description} key={`pdescription-${selectedProduct.id}`} /></label>
             <label>{t('approvedProductImage')}<input type="file" name="image" accept="image/jpeg,image/png,image/webp" /></label>
             <label className="checkbox-label"><input type="checkbox" name="is_approved" defaultChecked={selectedProduct.is_approved} key={`papproved-${selectedProduct.id}`} />{t('approvedForClinics')}</label>
+          </div>
+          <div className="admin-ai-tools">
+            <button type="button" className="secondary-button" disabled={adminLookupBusy} onClick={(event) => {
+              const formElement = event.currentTarget.form
+              if (formElement) void searchAdminProduct(formElement)
+            }}>{adminLookupBusy ? t('searchingWithAi') : t('adminAiSearch')}</button>
+            <span className="field-hint">{t('adminAiSearchHint')}</span>
+            {adminLookupError && <p role="alert" className="error-message">{adminLookupError}</p>}
+            {adminLookupSources.length > 0 && <ul className="exa-sources">{adminLookupSources.map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul>}
           </div>
           <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setSelectedProduct(null)}>{t('cancel')}</button><button className="primary-button" disabled={busy}>{busy ? t('saving') : t('saveChanges')}</button></div>
         </form>}

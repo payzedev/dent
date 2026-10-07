@@ -33,6 +33,14 @@ type ProductCandidate =
   | { source: 'ai'; suggestion: ProductSuggestion; sources?: { title: string; url: string }[] }
   | { source: 'exa'; suggestion: ProductSuggestion; sources: { title: string; url: string }[] }
 
+type PharmacyResult = {
+  pharmacy: 'Farmaciasaas' | 'Farmatodo'
+  productUrl: string
+  name: string | null
+  description: string | null
+  imageUrl: string | null
+}
+
 export function AddInventoryForm() {
   const t = useTranslations()
   const locale = useLocale()
@@ -52,6 +60,9 @@ export function AddInventoryForm() {
   const [aiPrefill, setAiPrefill] = useState<ProductSuggestion | null>(null)
   const [lookupBusy, setLookupBusy] = useState(false)
   const [lookupError, setLookupError] = useState('')
+  const [pharmacyResults, setPharmacyResults] = useState<PharmacyResult[]>([])
+  const [pharmacyBusy, setPharmacyBusy] = useState(false)
+  const [pharmacyError, setPharmacyError] = useState('')
   const [photoPreview, setPhotoPreview] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
   const [busy, setBusy] = useState(false)
@@ -176,6 +187,60 @@ export function AddInventoryForm() {
     }
   }
 
+  async function searchPharmacies() {
+    const searchBarcode = barcode.trim() || query.trim()
+    if (!/^[\da-zA-Z-]{1,128}$/.test(searchBarcode)) {
+      setPharmacyError(t('pharmacyBarcodeRequired'))
+      return
+    }
+    setPharmacyBusy(true)
+    setPharmacyError('')
+    setPharmacyResults([])
+    try {
+      const response = await fetch(`/api/pharmacy-search?barcode=${encodeURIComponent(searchBarcode)}`)
+      const result = await response.json() as { error?: string; results?: PharmacyResult[]; failedPharmacies?: string[] }
+      if (!response.ok) {
+        setPharmacyError(result.error || t('pharmacyLookupFailed'))
+        return
+      }
+      setPharmacyResults(result.results ?? [])
+      if (result.failedPharmacies?.length) setPharmacyError(t('pharmacyLookupFailed'))
+    } catch (error) {
+      setPharmacyError(error instanceof Error ? error.message : t('pharmacyLookupFailed'))
+    } finally {
+      setPharmacyBusy(false)
+    }
+  }
+
+  function applyPharmacyResult(result: PharmacyResult) {
+    if (!result.name) return
+    setProduct(null)
+    setAiPrefill({
+      name: result.name,
+      description: result.description ?? '',
+      barcode: barcode.trim() || query.trim(),
+      brand: null,
+      category_slugs: [],
+      presentation: 'individual',
+    })
+    setQuery(result.name)
+  }
+
+  function selectPhoto(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0] ?? null
+    if (file && (file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) {
+      setError(t('invalidImage'))
+      event.target.value = ''
+      setPhoto(null)
+      return
+    }
+    setError('')
+    setPhoto(file)
+  }
+
+  const pharmacySearchTerm = barcode.trim() || query.trim()
+  const canSearchPharmacies = /^[\da-zA-Z-]{1,128}$/.test(pharmacySearchTerm)
+
   function acceptCandidate() {
     if (!candidate) return
     if (candidate.source === 'catalog') {
@@ -295,6 +360,15 @@ export function AddInventoryForm() {
           {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></button></li>)}</ul>}
           {(query.trim().length >= 2 || barcode.trim() || photo) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t('searchingWithAi') : t('searchCatalogAndAi')}</button>}
           {lookupError && <p role="alert" className="error-message">{lookupError}</p>}
+          <button type="button" className="secondary-button pharmacy-search-button" disabled={pharmacyBusy || !canSearchPharmacies} onClick={() => void searchPharmacies()}>{pharmacyBusy ? t('searchingPharmacies') : t('pharmacySearch')}</button>
+          {pharmacyError && <p role="alert" className="error-message">{pharmacyError}</p>}
+          {pharmacyResults.length > 0 && <div className="pharmacy-results" aria-live="polite">{pharmacyResults.map((result) => <article className="pharmacy-result card" key={result.pharmacy}>
+            {result.imageUrl && <img src={result.imageUrl} alt={result.name || t('productImage')} />}
+            <div><h3>{result.name || result.pharmacy}</h3>{result.description && <p>{result.description}</p>}
+              <a href={result.productUrl} target="_blank" rel="noreferrer">{t('viewPharmacyProduct')}</a>
+              {result.name && <button type="button" className="text-button" onClick={() => applyPharmacyResult(result)}>{t('usePharmacyDetails')}</button>}
+            </div>
+          </article>)}</div>}
         </div>
         {product && <p className="catalog-selected" role="status">{t('catalogProductSelected', { name: product.name })}<button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]) }}>{t('clear')}</button></p>}
         <div className="form-grid">
@@ -307,17 +381,11 @@ export function AddInventoryForm() {
           <label>{t('quantity')}<input name="quantity" type="number" min="0" step="1" defaultValue="1" required /></label>
           <label>{t('minimumQuantity')}<input name="min_quantity" type="number" min="0" step="1" defaultValue="1" required /></label>
           <label>{t('expiryDate')}<input name="expiry_date" type="date" /></label>
-          <label>{t('uploadImage')}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => {
-            const file = event.target.files?.[0] ?? null
-            if (file && (file.size > 5 * 1024 * 1024 || !['image/jpeg', 'image/png', 'image/webp'].includes(file.type))) {
-              setError(t('invalidImage'))
-              event.target.value = ''
-              setPhoto(null)
-              return
-            }
-            setError('')
-            setPhoto(file)
-          }} /><span className="field-hint">{t('approvedImageHint')}</span></label>
+          <div className="photo-picker field-wide">
+            <label>{t('takePhoto')}<input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={selectPhoto} /></label>
+            <label>{t('choosePhoto')}<input type="file" accept="image/jpeg,image/png,image/webp" onChange={selectPhoto} /></label>
+            <span className="field-hint">{t('approvedImageHint')}</span>
+          </div>
         </div>
         {photo && <p className="field-hint">{t('photoLookupPrivacy')}</p>}
         {error && <p role="alert" className="error-message">{error}</p>}
