@@ -2,9 +2,11 @@ import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 
 export const runtime = 'nodejs'
-export const maxDuration = 45
+export const maxDuration = 90
 
 const model = 'deepseek-ai/deepseek-v4.1-flash'
+const nimRequestTimeoutMs = 55_000
+const nimMaxAttempts = 2
 const nimEndpoint = 'https://integrate.api.nvidia.com/v1/chat/completions'
 const imageLimit = 5 * 1024 * 1024
 
@@ -58,22 +60,37 @@ async function askModel(apiKey: string, prompt: string, imageDataUrl?: string): 
   const content: Array<Record<string, unknown>> = [{ type: 'text', text: prompt }]
   if (imageDataUrl) content.push({ type: 'image_url', image_url: { url: imageDataUrl } })
 
-  let response: Response
-  try {
-    response = await fetch(nimEndpoint, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model,
-        messages: [{ role: 'user', content }],
-        response_format: { type: 'json_object' },
-        temperature: 0.1,
-        max_tokens: 700,
-      }),
-      signal: AbortSignal.timeout(35_000),
-    })
-  } catch (error) {
-    const details = error instanceof Error ? error.message : 'Unknown network error'
+  const requestBody = JSON.stringify({
+    model,
+    messages: [{ role: 'user', content }],
+    response_format: { type: 'json_object' },
+    temperature: 0.1,
+    max_tokens: 700,
+  })
+
+  let response: Response | undefined
+  let lastError: unknown
+  for (let attempt = 1; attempt <= nimMaxAttempts; attempt += 1) {
+    try {
+      response = await fetch(nimEndpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: requestBody,
+        signal: AbortSignal.timeout(nimRequestTimeoutMs),
+      })
+      if (response.ok || response.status < 500 || attempt === nimMaxAttempts) break
+    } catch (error) {
+      lastError = error
+      if (attempt === nimMaxAttempts) {
+        const details = error instanceof Error ? error.message : 'Unknown network error'
+        throw new Error(`NVIDIA NIM request failed after ${attempt} attempts: ${details}`)
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250 * attempt))
+  }
+
+  if (!response) {
+    const details = lastError instanceof Error ? lastError.message : 'Unknown network error'
     throw new Error(`NVIDIA NIM request failed: ${details}`)
   }
 
