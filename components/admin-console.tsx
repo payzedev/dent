@@ -10,7 +10,7 @@ type Brand = { id: string; name: string }
 type Product = { id: string; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; approved_image_path: string | null; is_approved: boolean; presentation: 'individual' | 'set' | 'box'; sourceInventoryItemId?: string }
 type User = { id: string; email: string | null; full_name: string; clinic_name: string; status: string; created_at: string }
 type Clinic = { id: string; name: string }
-type ClinicItem = { id: string; clinic_id: string; owner_id: string; product_id: string | null; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; image_path: string | null; presentation: 'individual' | 'set' | 'box'; quantity: number; owner_name: string }
+type ClinicItem = { id: string; clinic_id: string; owner_id: string; product_id: string | null; name: string; description: string; barcode: string | null; category_id: string | null; category_ids: string[]; brand_id: string | null; image_path: string | null; presentation: 'individual' | 'set' | 'box'; quantity: number; status: 'new' | 'opened' | 'used' | 'defective' | 'missing'; owner_name: string }
 type Stats = { users: number; clinics: number; items: number; products: number; categories: number; brands: number; reports: number }
 
 const emptyStats: Stats = { users: 0, clinics: 0, items: 0, products: 0, categories: 0, brands: 0, reports: 0 }
@@ -64,7 +64,7 @@ export function AdminConsole() {
       supabase.from('catalog_products').select('id,name,description,barcode,category_id,brand_id,approved_image_path,is_approved,presentation').order('name'),
       supabase.from('profiles').select('id,email,full_name,clinic_name,status,created_at').order('created_at', { ascending: false }).limit(100),
       supabase.from('clinics').select('id,name').order('name'),
-      supabase.from('inventory_items').select('id,clinic_id,owner_id,product_id,name,description,barcode,category_id,brand_id,image_path,presentation,quantity').order('name'),
+      supabase.from('inventory_items').select('id,clinic_id,owner_id,product_id,name,description,barcode,category_id,brand_id,image_path,presentation,quantity,status').order('name'),
     ])
     const productIds = (productRows ?? []).map((product) => product.id)
     const itemIds = (clinicItemRows ?? []).map((item) => item.id)
@@ -345,11 +345,12 @@ export function AdminConsole() {
       const items = clinicItems.filter((item) => item.clinic_id === clinic.id)
       return <section className="card admin-section" key={clinic.id}>
         <div className="section-heading"><div><h2>{clinic.name}</h2><p className="subtle">{t('clinicProductsCount', { count: items.length })}</p></div></div>
-        {items.length === 0 ? <p className="subtle">{t('noClinicProducts')}</p> : <div className="table-wrap"><table><thead><tr><th>{t('name')}</th><th>{t('barcode')}</th><th>{t('brand')}</th><th>{t('quantity')}</th><th>{t('catalog')}</th><th>{t('actions')}</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}>
+        {items.length === 0 ? <p className="subtle">{t('noClinicProducts')}</p> : <div className="table-wrap"><table><thead><tr><th>{t('name')}</th><th>{t('barcode')}</th><th>{t('brand')}</th><th>{t('quantity')}</th><th>{t('status')}</th><th>{t('catalog')}</th><th>{t('actions')}</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}>
           <td><strong>{item.name}</strong><br /><span className="field-hint">{item.owner_name || t('unnamedUser')}</span></td>
           <td>{item.barcode || '—'}</td>
           <td>{brands.find((brand) => brand.id === item.brand_id)?.name || '—'}</td>
           <td>{item.quantity}</td>
+          <td><span className={`status-badge status-${item.status}`}>{t(item.status)}</span></td>
           <td>{item.product_id ? t('linkedToCatalog') : t('pendingCatalogReview')}</td>
           <td><button className="text-button" type="button" onClick={() => reviewClinicItem(item)}>{item.product_id ? t('viewProduct') : t('addToCatalog')}</button></td>
         </tr>)}</tbody></table></div>}

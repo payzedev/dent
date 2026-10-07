@@ -30,12 +30,10 @@ type ProductSuggestion = {
 }
 type ProductCandidate =
   | { source: 'catalog'; product: CatalogProduct; imageUrl: string | null }
-  | { source: 'ai'; suggestion: ProductSuggestion; sources?: { title: string; url: string }[] }
-  | { source: 'exa'; suggestion: ProductSuggestion; sources: { title: string; url: string }[] }
-  | { source: 'pharmacy'; pharmacy: string; suggestion: ProductSuggestion; sources: { title: string; url: string }[]; imageUrl: string | null; score: number }
+  | { source: 'ai' | 'exa' | 'pharmacy' | 'store'; suggestion: ProductSuggestion; sourceName: string; sources: { title: string; url: string }[]; imageUrl: string | null; score: number }
 
 type PharmacyResult = {
-  pharmacy: 'Farmacia SAAS' | 'Farmatodo' | 'Farmaexpress' | 'FarmaGO' | 'TuZonaMarket' | 'Farmabien'
+  pharmacy: string
   productUrl: string
   found: boolean
   name: string | null
@@ -44,6 +42,7 @@ type PharmacyResult = {
   brand?: string | null
   score: number
 }
+type StoreResult = { store: string; name: string; url: string; description: string; imageUrl: string | null; score: number }
 
 export function AddInventoryForm() {
   const t = useTranslations()
@@ -60,11 +59,11 @@ export function AddInventoryForm() {
   const [categoryIds, setCategoryIds] = useState<string[]>([])
   const [barcode, setBarcode] = useState('')
   const [scannerOpen, setScannerOpen] = useState(false)
-  const [candidate, setCandidate] = useState<ProductCandidate | null>(null)
+  const [candidates, setCandidates] = useState<ProductCandidate[]>([])
   const [aiPrefill, setAiPrefill] = useState<ProductSuggestion | null>(null)
   const [lookupBusy, setLookupBusy] = useState(false)
   const [lookupError, setLookupError] = useState('')
-  const [lookupStep, setLookupStep] = useState<'catalog' | 'pharmacy' | 'ai' | null>(null)
+  const [lookupStep, setLookupStep] = useState<'catalog' | 'pharmacy' | 'store' | 'ai' | null>(null)
   const [catalogImageUrls, setCatalogImageUrls] = useState<Record<string, string>>({})
   const [photoPreview, setPhotoPreview] = useState('')
   const [photo, setPhoto] = useState<File | null>(null)
@@ -152,67 +151,16 @@ export function AddInventoryForm() {
   async function searchProductAssist() {
     setLookupBusy(true)
     setLookupError('')
-    setCandidate(null)
+    setCandidates([])
     const searchTerm = barcode.trim() || query.trim()
     const inferredBarcode = barcode.trim() || (/^\d{8,14}$/.test(query.trim()) ? query.trim() : '')
-    try {
-      setLookupStep('catalog')
-      if (searchTerm) {
-        const { data, error: catalogError } = await supabase.rpc('search_catalog', { search_term: searchTerm, result_limit: 8 })
-        if (catalogError) throw new Error(catalogError.message)
-        const products = (data ?? []) as CatalogProduct[]
-        const match = products.find((item) => barcode.trim() && item.barcode?.trim() === barcode.trim()) ?? products[0]
-        if (match) {
-          let imageUrl: string | null = catalogImageUrls[match.id] || null
-          if (match.approved_image_path && !imageUrl) {
-            const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(match.approved_image_path, 3600)
-            if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
-            else imageUrl = image.signedUrl
-          }
-          setCandidate({ source: 'catalog', product: match, imageUrl })
-          return
-        }
-      }
+    const foundCandidates: ProductCandidate[] = []
+    const failures: string[] = []
 
-      if (/^[\da-zA-Z-]{1,128}$/.test(inferredBarcode)) {
-        setLookupStep('pharmacy')
-        try {
-          const response = await fetch(`/api/pharmacy-search?barcode=${encodeURIComponent(inferredBarcode)}`)
-          const result = await response.json() as { error?: string; results?: PharmacyResult[]; bestMatch?: PharmacyResult | null }
-          if (response.ok) {
-            const pharmacyProduct = result.bestMatch
-            if (pharmacyProduct?.name) {
-              setCandidate({
-                source: 'pharmacy',
-                pharmacy: pharmacyProduct.pharmacy,
-                suggestion: {
-                  name: pharmacyProduct.name,
-                  description: pharmacyProduct.description ?? '',
-                  barcode: inferredBarcode,
-                  brand: pharmacyProduct.brand ?? null,
-                  category_slugs: [],
-                  presentation: 'individual',
-                },
-                sources: (result.results ?? [])
-                  .filter((item) => item.found && item.name)
-                  .map((item) => ({ title: item.pharmacy, url: item.productUrl })),
-                imageUrl: pharmacyProduct.imageUrl,
-                score: pharmacyProduct.score,
-              })
-              return
-            }
-          } else {
-            console.error('Pharmacy catalog search failed', result.error || response.statusText)
-          }
-        } catch (error) {
-          console.error('Pharmacy catalog search failed', error instanceof Error ? error.message : 'Unknown error')
-        }
-      }
-
-      setLookupStep('ai')
+    async function requestAi(term: string, productBarcode: string) {
       const form = new FormData()
-      form.set('query', inferredBarcode ? '' : query.trim())
-      form.set('barcode', inferredBarcode)
+      form.set('query', productBarcode ? '' : term)
+      form.set('barcode', productBarcode)
       if (photo) form.set('image', photo)
       const response = await fetch('/api/product-assist', { method: 'POST', body: form })
       const result = await response.json() as {
@@ -220,37 +168,217 @@ export function AddInventoryForm() {
         source?: 'catalog' | 'ai' | 'exa'
         product?: CatalogProduct
         suggestion?: ProductSuggestion
+        suggestions?: ProductSuggestion[]
         sources?: { title: string; url: string }[]
       }
-      if (!response.ok) {
-        throw new Error(result.error || t('productLookupFailed'))
-      }
+      if (!response.ok) throw new Error(result.error || t('productLookupFailed'))
       if (result.source === 'catalog' && result.product) {
-        const imagePath = result.product.approved_image_path
         let imageUrl: string | null = null
-        if (imagePath) {
-          const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(imagePath, 3600)
+        if (result.product.approved_image_path) {
+          const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(result.product.approved_image_path, 3600)
           if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
           else imageUrl = image.signedUrl
         }
-        setCandidate({ source: 'catalog', product: result.product, imageUrl })
-        return
+        foundCandidates.push({ source: 'catalog', product: result.product, imageUrl })
+        return result.product
       }
-      if (result.source === 'ai' && result.suggestion) {
-        setCandidate({ source: 'ai', suggestion: result.suggestion, sources: result.sources ?? [] })
-        return
+      const suggestions = result.suggestions?.length ? result.suggestions : result.suggestion ? [result.suggestion] : []
+      if (suggestions.length) {
+        const source = result.source === 'exa' ? 'exa' : 'ai'
+        for (const suggestion of suggestions.slice(0, 3)) {
+          foundCandidates.push({
+            source,
+            sourceName: source === 'exa' ? t('webSources') : t('aiSource'),
+            suggestion,
+            sources: result.sources ?? [],
+            imageUrl: photoPreview || null,
+            score: 0,
+          })
+        }
       }
-      if (result.source === 'exa' && result.suggestion) {
-        setCandidate({ source: 'exa', suggestion: result.suggestion, sources: result.sources ?? [] })
-        return
+      return suggestions[0] ?? null
+    }
+
+    try {
+      setLookupStep('catalog')
+      if (searchTerm) {
+        const { data, error: catalogError } = await supabase.rpc('search_catalog', { search_term: searchTerm, result_limit: 8 })
+        if (catalogError) throw new Error(catalogError.message)
+        const products = (data ?? []) as CatalogProduct[]
+        const orderedProducts = [...products].sort((left, right) =>
+          Number(Boolean(right.barcode && right.barcode === inferredBarcode))
+          - Number(Boolean(left.barcode && left.barcode === inferredBarcode)),
+        ).slice(0, 3)
+        for (const match of orderedProducts) {
+          let imageUrl: string | null = catalogImageUrls[match.id] || null
+          if (match.approved_image_path && !imageUrl) {
+            const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(match.approved_image_path, 3600)
+            if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
+            else imageUrl = image.signedUrl
+          }
+          foundCandidates.push({ source: 'catalog', product: match, imageUrl })
+        }
       }
-      throw new Error(t('productLookupFailed'))
+
+      let externalSearchTerm = searchTerm
+      let externalBarcode = inferredBarcode
+      let aiAlreadyRequested = false
+      if (!externalSearchTerm && photo) {
+        setLookupStep('ai')
+        const identified = await requestAi('', '')
+        aiAlreadyRequested = true
+        if (identified) {
+          externalSearchTerm = identified.name
+          externalBarcode = identified.barcode ?? ''
+          if (!('id' in identified)) {
+            const { data, error: catalogError } = await supabase.rpc('search_catalog', { search_term: externalSearchTerm, result_limit: 3 })
+            if (catalogError) throw new Error(catalogError.message)
+            for (const match of (data ?? []) as CatalogProduct[]) {
+              let imageUrl = catalogImageUrls[match.id] || null
+              if (match.approved_image_path && !imageUrl) {
+                const { data: image, error: imageError } = await supabase.storage.from('inventory-images').createSignedUrl(match.approved_image_path, 3600)
+                if (imageError) console.error('Could not load a shared catalog product photo', imageError.message)
+                else imageUrl = image.signedUrl
+              }
+              foundCandidates.push({ source: 'catalog', product: match, imageUrl })
+            }
+          }
+        }
+      }
+
+      if (externalSearchTerm) {
+        setLookupStep('pharmacy')
+        try {
+          const params = externalBarcode
+            ? `barcode=${encodeURIComponent(externalBarcode)}`
+            : `q=${encodeURIComponent(externalSearchTerm)}`
+          const response = await fetch(`/api/pharmacy-search?${params}`)
+          const result = await response.json() as { error?: string; suggestions?: PharmacyResult[] }
+          if (response.ok) {
+            for (const pharmacyProduct of result.suggestions ?? []) {
+              if (!pharmacyProduct.name) continue
+              foundCandidates.push({
+                source: 'pharmacy',
+                sourceName: pharmacyProduct.pharmacy,
+                suggestion: {
+                  name: pharmacyProduct.name,
+                  description: pharmacyProduct.description ?? '',
+                  barcode: externalBarcode || null,
+                  brand: pharmacyProduct.brand ?? null,
+                  category_slugs: [],
+                  presentation: 'individual',
+                },
+                sources: [{ title: pharmacyProduct.pharmacy, url: pharmacyProduct.productUrl }],
+                imageUrl: pharmacyProduct.imageUrl,
+                score: pharmacyProduct.score,
+              })
+            }
+          } else {
+            failures.push(result.error || response.statusText)
+          }
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : t('pharmacyLookupFailed'))
+        }
+
+        setLookupStep('store')
+        try {
+          const response = await fetch(`/api/store-search?${externalBarcode ? `barcode=${encodeURIComponent(externalBarcode)}` : `q=${encodeURIComponent(externalSearchTerm)}`}`)
+          const result = await response.json() as { error?: string; suggestions?: StoreResult[] }
+          if (response.ok) {
+            for (const storeResult of result.suggestions ?? []) {
+              foundCandidates.push({
+                source: 'store',
+                sourceName: storeResult.store,
+                suggestion: {
+                  name: storeResult.name,
+                  description: storeResult.description,
+                  barcode: externalBarcode || null,
+                  brand: null,
+                  category_slugs: [],
+                  presentation: 'individual',
+                },
+                sources: [{ title: storeResult.store, url: storeResult.url }],
+                imageUrl: storeResult.imageUrl,
+                score: storeResult.score,
+              })
+            }
+          } else {
+            failures.push(result.error || response.statusText)
+          }
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : t('storeLookupFailed'))
+        }
+      }
+
+      if ((externalSearchTerm || photo) && !aiAlreadyRequested) {
+        setLookupStep('ai')
+        try {
+          await requestAi(externalSearchTerm, externalBarcode)
+        } catch (error) {
+          failures.push(error instanceof Error ? error.message : t('productLookupFailed'))
+        }
+      }
+
+      const candidatesByGroup = (['catalog', 'pharmacy', 'store', 'ai', 'exa'] as const).flatMap((source) =>
+        foundCandidates.filter((item) => item.source === source)
+          .sort((left, right) => (right.source === 'catalog' ? 100 : right.score) - (left.source === 'catalog' ? 100 : left.score))
+          .slice(0, 3),
+      )
+      const bestPharmacyMatch = candidatesByGroup.find((candidate) => candidate.source === 'pharmacy')
+      if (bestPharmacyMatch && 'suggestion' in bestPharmacyMatch) {
+        setProduct(null)
+        setAiPrefill(bestPharmacyMatch.suggestion)
+        setQuery(bestPharmacyMatch.suggestion.name)
+        setBarcode(bestPharmacyMatch.suggestion.barcode ?? inferredBarcode)
+        setCategoryIds(bestPharmacyMatch.suggestion.category_slugs.flatMap((slug) => {
+          const category = categories.find((value) => value.slug === slug)
+          return category ? [category.id] : []
+        }))
+      }
+      setCandidates(candidatesByGroup)
+      if (!candidatesByGroup.length) {
+        setLookupError(failures[0] || t('productLookupFailed'))
+      } else if (failures.length) {
+        setLookupError(t('someSearchSourcesFailed'))
+      }
     } catch (error) {
       setLookupError(error instanceof Error ? error.message : t('productLookupFailed'))
     } finally {
       setLookupBusy(false)
       setLookupStep(null)
     }
+  }
+
+  async function applyCandidate(selected: ProductCandidate) {
+    if (selected.source === 'catalog') {
+      chooseProduct(selected.product)
+      setCandidates([])
+      return
+    }
+    setProduct(null)
+    setAiPrefill(selected.suggestion)
+    setQuery(selected.suggestion.name)
+    setBarcode(selected.suggestion.barcode ?? barcode)
+    setCategoryIds(selected.suggestion.category_slugs.flatMap((slug) => {
+      const category = categories.find((value) => value.slug === slug)
+      return category ? [category.id] : []
+    }))
+    if (selected.imageUrl && (selected.source === 'pharmacy' || selected.source === 'store')) {
+      try {
+        setPhoto(null)
+        const response = await fetch(`/api/product-image?url=${encodeURIComponent(selected.imageUrl)}`)
+        if (!response.ok) {
+          const result = await response.json() as { error?: string }
+          throw new Error(result.error || t('productImageImportFailed'))
+        }
+        const imageBlob = await response.blob()
+        const extension = imageBlob.type === 'image/png' ? 'png' : imageBlob.type === 'image/webp' ? 'webp' : 'jpg'
+        setPhoto(new File([imageBlob], `product-suggestion.${extension}`, { type: imageBlob.type }))
+      } catch (error) {
+        setError(error instanceof Error ? error.message : t('productImageImportFailed'))
+      }
+    }
+    setCandidates([])
   }
 
   function selectPhoto(event: React.ChangeEvent<HTMLInputElement>) {
@@ -263,23 +391,6 @@ export function AddInventoryForm() {
     }
     setError('')
     setPhoto(file)
-  }
-
-  function acceptCandidate() {
-    if (!candidate) return
-    if (candidate.source === 'catalog') {
-      chooseProduct(candidate.product)
-    } else {
-      setProduct(null)
-      setAiPrefill(candidate.suggestion)
-      setQuery(candidate.suggestion.name)
-      setBarcode(candidate.suggestion.barcode ?? barcode)
-      setCategoryIds(candidate.suggestion.category_slugs.flatMap((slug) => {
-        const category = categories.find((value) => value.slug === slug)
-        return category ? [category.id] : []
-      }))
-    }
-    setCandidate(null)
   }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
@@ -338,7 +449,7 @@ export function AddInventoryForm() {
       quantity,
       min_quantity: Number(form.get('min_quantity') || 1),
       expiry_date: String(form.get('expiry_date') || '') || null,
-      status: quantity === 0 ? 'missing' : 'new',
+      status: quantity === 0 ? 'missing' : String(form.get('status') || 'new'),
       image_path: imagePath,
     }).select('id').single()
     if (insertError) {
@@ -379,20 +490,21 @@ export function AddInventoryForm() {
       <div className="page-heading"><div><p className="eyebrow">{t('inventory')}</p><h1>{t('addItem')}</h1><p className="subtle">{t('addItemDescription')}</p></div></div>
       <form className="card inventory-form" onSubmit={submit}>
         <div className="catalog-search">
-          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setCategoryIds([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
+          <label>{t('findCatalogProduct')}<span className="input-with-icon catalog-search-input"><SearchIcon /><input value={query} onChange={(event) => { setQuery(event.target.value); setProduct(null); setAiPrefill(null); setCategoryIds([]); setCandidates([]) }} placeholder={t('searchNameOrBarcode')} autoComplete="off" /><button type="button" className="scan-button" aria-label={t('scanBarcode')} title={t('scanBarcode')} onClick={() => setScannerOpen(true)}><ScanIcon size={20} /></button></span></label>
           <p className="field-hint">{t('catalogLookupHint')}</p>
           {results.length > 0 && <ul className="catalog-results">{results.map((result) => <li key={result.id}><button type="button" onClick={() => chooseProduct(result)}>{catalogImageUrls[result.id] ? <img src={catalogImageUrls[result.id]} alt="" onError={() => setCatalogImageUrls((current) => ({ ...current, [result.id]: '' }))} /> : <span className="catalog-result-image" aria-hidden="true">✳</span>}<span className="catalog-result-copy"><strong>{result.name}</strong><span>{result.barcode || t('noBarcode')}</span></span></button></li>)}</ul>}
-          {(query.trim().length >= 2 || barcode.trim() || photo) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t(lookupStep === 'catalog' ? 'searchingCatalog' : lookupStep === 'pharmacy' ? 'searchingPharmacies' : 'searchingWithAi') : t('searchCatalogPharmacyAi')}</button>}
+          {(query.trim().length >= 2 || barcode.trim() || photo) && <button type="button" className="secondary-button ai-search-button" disabled={lookupBusy} onClick={() => void searchProductAssist()}>{lookupBusy ? t(lookupStep === 'catalog' ? 'searchingCatalog' : lookupStep === 'pharmacy' ? 'searchingPharmacies' : lookupStep === 'store' ? 'searchingStores' : 'searchingWithAi') : t('searchCatalogPharmacyAi')}</button>}
           {lookupError && <p role="alert" className="error-message">{lookupError}</p>}
         </div>
         {product && <div className="catalog-selected" role="status">{catalogImageUrls[product.id] && <img src={catalogImageUrls[product.id]} alt={product.name} onError={() => setCatalogImageUrls((current) => ({ ...current, [product.id]: '' }))} />}<span>{t('catalogProductSelected', { name: product.name })}</span><button type="button" className="text-button" onClick={() => { setProduct(null); setQuery(''); setBarcode(''); setCategoryIds([]) }}>{t('clear')}</button></div>}
         <div className="form-grid">
           <label>{t('name')}<input name="name" required maxLength={160} defaultValue={product?.name ?? aiPrefill?.name ?? ''} key={`name-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
-          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null) }} placeholder={t('barcodePlaceholder')} /></label>
+          <label>{t('barcode')}<input name="barcode" maxLength={128} value={barcode} onChange={(event) => { setBarcode(event.target.value); setProduct(null); setAiPrefill(null); setCandidates([]) }} placeholder={t('barcodePlaceholder')} /></label>
           <label>{t('categories')}<select name="category_ids" multiple value={categoryIds} onChange={(event) => setCategoryIds([...event.target.selectedOptions].map((option) => option.value))} aria-describedby="category-selection-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="category-selection-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
           <label>{t('brand')}<select name="brand_id" defaultValue={product?.brand_id ?? brands.find((brand) => brand.name.toLocaleLowerCase() === aiPrefill?.brand?.toLocaleLowerCase())?.id ?? ''} key={`brand-${product?.id ?? aiPrefill?.name ?? 'custom'}`}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label>
           <label className="field-wide">{t('description')}<textarea name="description" rows={4} maxLength={2000} defaultValue={product?.description ?? aiPrefill?.description ?? ''} key={`description-${product?.id ?? aiPrefill?.name ?? 'custom'}`} /></label>
           <label>{t('presentation')}<select name="presentation" defaultValue={product?.presentation ?? aiPrefill?.presentation ?? 'individual'} key={`presentation-${product?.id ?? aiPrefill?.name ?? 'custom'}`}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label>
+          <label>{t('status')}<select name="status" defaultValue="new"><option value="new">{t('new')}</option><option value="opened">{t('opened')}</option><option value="used">{t('used')}</option><option value="defective">{t('defective')}</option></select></label>
           <label>{t('quantity')}<input name="quantity" type="number" min="0" step="1" defaultValue="1" required /></label>
           <label>{t('minimumQuantity')}<input name="min_quantity" type="number" min="0" step="1" defaultValue="1" required /></label>
           <label>{t('expiryDate')}<input name="expiry_date" type="date" /></label>
@@ -408,37 +520,37 @@ export function AddInventoryForm() {
         <div className="form-footer"><p className="field-hint">{t('expiryOptionalHint')}</p><button className="primary-button" type="submit" disabled={busy || !clinicId}>{busy ? t('saving') : t('saveItem')}</button></div>
       </form>
       {scannerOpen && <BarcodeScanner onDetected={handleBarcodeDetected} onClose={() => setScannerOpen(false)} />}
-      {candidate && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setCandidate(null) }}>
+      {candidates.length > 0 && <div className="dialog-backdrop" onClick={(event) => { if (event.target === event.currentTarget) setCandidates([]) }}>
         <section role="dialog" aria-modal="true" aria-labelledby="product-candidate-title" className="item-dialog card product-candidate-dialog">
-          <h2 id="product-candidate-title">{t('confirmProduct')}</h2>
-          <p className="subtle">{candidate.source === 'pharmacy'
-            ? t('pharmacyProductVerified', { pharmacy: candidate.pharmacy, score: candidate.score })
-            : t(candidate.source === 'catalog' ? 'catalogVerifiedProduct' : candidate.source === 'exa' ? 'exaSuggestionDisclaimer' : 'aiSuggestionDisclaimer')}</p>
-          {candidate.source === 'catalog' && (candidate.imageUrl || photoPreview) && <img className="detail-image" src={candidate.imageUrl || photoPreview} alt={candidate.imageUrl ? candidate.product.name : t('uploadedProductPhoto')} onError={() => {
-            if (candidate.imageUrl) setCandidate({ ...candidate, imageUrl: null })
-          }} />}
-          {candidate.source === 'pharmacy' && candidate.imageUrl && <img className="detail-image" src={candidate.imageUrl} alt={candidate.suggestion.name} onError={() => setCandidate({ ...candidate, imageUrl: null })} />}
-          {candidate.source !== 'catalog' && candidate.source !== 'pharmacy' && photoPreview && <img className="detail-image" src={photoPreview} alt={t('uploadedProductPhoto')} />}
-          <dl className="detail-list">
-            <div><dt>{t('name')}</dt><dd>{candidate.source === 'catalog' ? candidate.product.name : candidate.suggestion.name}</dd></div>
-            <div><dt>{t('barcode')}</dt><dd>{(candidate.source === 'catalog' ? candidate.product.barcode : candidate.suggestion.barcode) || t('notProvided')}</dd></div>
-            <div><dt>{t('description')}</dt><dd>{(candidate.source === 'catalog' ? candidate.product.description : candidate.suggestion.description) || t('notProvided')}</dd></div>
-            <div><dt>{t('brand')}</dt><dd>{candidate.source === 'catalog'
-              ? brands.find((brand) => brand.id === candidate.product.brand_id)?.name || t('notProvided')
-              : candidate.suggestion.brand || t('notProvided')}</dd></div>
-            <div><dt>{t('categories')}</dt><dd>{candidate.source === 'catalog'
-              ? (candidate.product.category_ids ?? []).map((id) => {
-                const category = categories.find((value) => value.id === id)
-                return category ? locale === 'es' ? category.name_es : category.name_en : ''
-              }).filter(Boolean).join(', ') || t('uncategorized')
-              : candidate.suggestion.category_slugs.map((slug) => {
-                const category = categories.find((value) => value.slug === slug)
-                return category ? locale === 'es' ? category.name_es : category.name_en : ''
-              }).filter(Boolean).join(', ') || t('uncategorized')}</dd></div>
-            <div><dt>{t('presentation')}</dt><dd>{t(candidate.source === 'catalog' ? candidate.product.presentation : candidate.suggestion.presentation)}</dd></div>
-          </dl>
-          {candidate.source !== 'catalog' && (candidate.source === 'exa' ? candidate.sources : candidate.sources ?? []).length > 0 && <div className="exa-sources"><strong>{t('webSources')}</strong><ul>{(candidate.source === 'exa' ? candidate.sources : candidate.sources ?? []).map((source) => <li key={source.url}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a></li>)}</ul></div>}
-          <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setCandidate(null)}>{t('rejectProduct')}</button><button type="button" className="primary-button" onClick={acceptCandidate}>{t('confirmProduct')}</button></div>
+          <h2 id="product-candidate-title">{t('productSuggestions')}</h2>
+          <p className="subtle">{t('productSuggestionsHint')}</p>
+          <div className="suggestion-list">
+            {candidates.map((option, index) => {
+              const name = option.source === 'catalog' ? option.product.name : option.suggestion.name
+              const description = option.source === 'catalog' ? option.product.description : option.suggestion.description
+              const sourceName = option.source === 'catalog' ? t('catalog') : option.sourceName
+              const score = option.source === 'catalog' ? null : option.score
+              const photoUrl = option.source === 'catalog'
+                ? option.imageUrl
+                : option.source === 'pharmacy' || option.source === 'store'
+                  ? option.imageUrl ? `/api/product-image?url=${encodeURIComponent(option.imageUrl)}` : photoPreview
+                  : photoPreview
+              return <article className="suggestion-card" key={`${option.source}-${sourceName}-${name}-${index}`}>
+                <div className="suggestion-image">
+                  {photoUrl && <img src={photoUrl} alt={name} onError={(event) => { event.currentTarget.hidden = true }} />}
+                  {!photoUrl && <span aria-hidden="true">✳</span>}
+                </div>
+                <div className="suggestion-copy">
+                  <div className="suggestion-meta"><span>{sourceName}</span>{score !== null && <strong>{score}%</strong>}</div>
+                  <h3>{name}</h3>
+                  {description && <p>{description}</p>}
+                  {option.source !== 'catalog' && option.sources.map((source) => <a key={source.url} href={source.url} target="_blank" rel="noreferrer">{t('viewProductSource', { source: source.title })}</a>)}
+                  <button type="button" className="secondary-button" disabled={busy} onClick={() => void applyCandidate(option)}>{t('useSuggestion')}</button>
+                </div>
+              </article>
+            })}
+          </div>
+          <div className="dialog-actions"><button type="button" className="secondary-button" onClick={() => setCandidates([])}>{t('cancel')}</button></div>
         </section>
       </div>}
     </section>

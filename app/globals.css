@@ -41,7 +41,9 @@ label{display:grid;gap:7px;color:var(--ink);font-size:13px;font-weight:650}
 .status-badge{display:inline-flex;align-items:center;justify-content:center;width:max-content;max-width:100%;border-radius:100px;padding:4px 9px;font-size:11px;font-weight:700;white-space:nowrap}
 .inventory-card>.status-badge{position:absolute;right:14px;top:14px}
 .status-new{background:#E7F5EA;color:#537A5D}
+.status-opened{background:#E8F1FC;color:#53769A}
 .status-used{background:#FFF1D7;color:#8B7040}
+.status-defective{background:#FCE8EB;color:#A3485B}
 .status-missing{background:#FCE8EB;color:#A45E70}
 .status-open{background:#FFF1D7;color:#8B7040}
 .status-in_progress{background:#E6F1FD;color:#4B7299}
@@ -97,6 +99,17 @@ label{display:grid;gap:7px;color:var(--ink);font-size:13px;font-weight:650}
 .password-toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);border:0;border-radius:7px;background:#F2F5FA;padding:5px 9px;color:#50678C;font-size:12px;font-weight:700}
 .ai-search-button{margin-top:10px}
 .product-candidate-dialog{display:grid;gap:12px}
+.suggestion-list{display:grid;gap:10px;max-height:60dvh;overflow:auto;padding-right:3px}
+.suggestion-card{display:grid;grid-template-columns:92px minmax(0,1fr);gap:12px;padding:12px;border:1px solid var(--border);border-radius:13px;background:#fff}
+.suggestion-image{display:grid;place-items:center;width:92px;height:92px;overflow:hidden;border-radius:9px;background:#F2F5FA;color:#9AA8BB;font-size:26px}
+.suggestion-image img{width:100%;height:100%;object-fit:contain}
+.suggestion-copy{display:grid;justify-items:start;align-content:start;gap:5px;min-width:0}
+.suggestion-copy h3{margin:0;font-size:15px;line-height:1.35}
+.suggestion-copy p{margin:0;color:var(--muted);font-size:12px}
+.suggestion-copy a{font-size:12px;color:var(--primary);font-weight:650}
+.suggestion-copy .secondary-button{margin-top:4px}
+.suggestion-meta{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:11px}
+.suggestion-meta strong{color:#537A5D}
 .product-candidate-dialog h2{margin:0;padding-right:36px}
 .product-candidate-dialog .detail-list{margin:4px 0}
 .text-button{border:0;background:none;color:#50678C;font-size:12px;font-weight:700;padding:6px 8px;cursor:pointer}
@@ -219,4 +232,6 @@ td .text-button{padding-left:0}
 @media(max-width:540px){
   .photo-picker{grid-template-columns:1fr}
   .photo-picker .field-hint{grid-column:auto}
+  .suggestion-card{grid-template-columns:68px minmax(0,1fr);gap:9px;padding:9px}
+  .suggestion-image{width:68px;height:68px}
 }

@@ -15,7 +15,7 @@ type InventoryItem = {
   quantity: number
   min_quantity: number
   expiry_date: string | null
-  status: 'new' | 'used' | 'missing'
+  status: 'new' | 'opened' | 'used' | 'defective' | 'missing'
   created_at: string
   barcode: string | null
   image_path: string | null
@@ -235,7 +235,7 @@ export function InventoryPage() {
       <div className="inventory-filters">
         <label className="search-field"><SearchIcon /><span className="sr-only">{t('searchInventory')}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t('searchNameOrBarcode')} /></label>
         <label><span className="sr-only">{t('category')}</span><select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}><option value="">{t('allCategories')}</option>{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select></label>
-        <label><span className="sr-only">{t('status')}</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">{t('allStatuses')}</option><option value="new">{t('new')}</option><option value="used">{t('used')}</option><option value="missing">{t('missing')}</option></select></label>
+        <label><span className="sr-only">{t('status')}</span><select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}><option value="">{t('allStatuses')}</option><option value="new">{t('new')}</option><option value="opened">{t('opened')}</option><option value="used">{t('used')}</option><option value="defective">{t('defective')}</option><option value="missing">{t('missing')}</option></select></label>
       </div>
       {error && <p role="alert" className="error-message">{error}</p>}
       {visibleItems.length ? <div className="inventory-grid">{visibleItems.map((item) => {
@@ -277,7 +277,7 @@ export function InventoryPage() {
             <label>{t('categories')}<select name="category_ids" multiple defaultValue={selected.category_ids} size={Math.min(categories.length, 5)} aria-describedby="edit-category-selection-hint">{categories.map((category) => <option key={category.id} value={category.id}>{locale === 'es' ? category.name_es : category.name_en}</option>)}</select><span id="edit-category-selection-hint" className="field-hint">{t('selectMultipleCategories')}</span></label>
             <div className="form-row"><label>{t('brand')}<select name="brand_id" defaultValue={selected.brand_id ?? ''}><option value="">{t('chooseBrand')}</option>{brands.map((brand) => <option key={brand.id} value={brand.id}>{brand.name}</option>)}</select></label><label>{t('presentation')}<select name="presentation" defaultValue={selected.presentation}><option value="individual">{t('individual')}</option><option value="set">{t('set')}</option><option value="box">{t('box')}</option></select></label></div>
             <div className="form-row"><label>{t('quantity')}<input name="quantity" type="number" min="0" defaultValue={selected.quantity} required /></label><label>{t('minimumQuantity')}<input name="min_quantity" type="number" min="0" defaultValue={selected.min_quantity} required /></label></div>
-            <div className="form-row"><label>{t('expiryDate')}<input name="expiry_date" type="date" defaultValue={selected.expiry_date ?? ''} /></label><label>{t('status')}<select name="status" defaultValue={selected.status}><option value="new">{t('new')}</option><option value="used">{t('used')}</option><option value="missing">{t('missing')}</option></select></label></div>
+            <div className="form-row"><label>{t('expiryDate')}<input name="expiry_date" type="date" defaultValue={selected.expiry_date ?? ''} /></label><label>{t('status')}<select name="status" defaultValue={selected.status}><option value="new">{t('new')}</option><option value="opened">{t('opened')}</option><option value="used">{t('used')}</option><option value="defective">{t('defective')}</option><option value="missing">{t('missing')}</option></select></label></div>
             <label>{t('uploadImage')}<input name="edit_image" type="file" accept="image/jpeg,image/png,image/webp" /><span className="field-hint">{t('approvedImageHint')}</span></label>
             {selected.image_path && <label className="checkbox-label"><input type="checkbox" name="remove_custom_image" />{t('removeCustomImage')}</label>}
             <div className="quantity-controls"><span>{t('adjustQuantity')}</span><button type="button" disabled={busy || selected.quantity === 0} onClick={() => void changeQuantity(selected, -1)} aria-label={t('removeOne')}>−</button><strong>{t('quantityPresentation', { count: selected.quantity, presentation: t(selected.presentation) })}</strong><button type="button" disabled={busy} onClick={() => void changeQuantity(selected, 1)} aria-label={t('addOne')}>+</button></div>

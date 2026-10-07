@@ -4,8 +4,6 @@ import { createClient } from '@/lib/supabase/server'
 export const runtime = 'nodejs'
 
 type PharmacyName = 'Farmacia SAAS' | 'Farmatodo' | 'Farmaexpress' | 'FarmaGO' | 'TuZonaMarket' | 'Farmabien'
-type MatchEvidence = 'exact-barcode' | 'barcode-in-product-url'
-
 type PharmacyMatch = {
   pharmacy: PharmacyName
   productUrl: string
@@ -15,15 +13,12 @@ type PharmacyMatch = {
   imageUrl: string | null
   brand: string | null
   score: number
-  evidence: MatchEvidence | null
 }
-
 type StoreProduct = {
   productName?: string
   name?: string
   description?: string
   link?: string
-  linkText?: string
   brand?: string
   items?: Array<{
     ean?: string
@@ -32,184 +27,20 @@ type StoreProduct = {
     images?: Array<{ imageUrl?: string }>
   }>
 }
-
 type PharmacyConfig = {
   name: PharmacyName
-  searchUrl: (barcode: string) => string
+  searchUrl: (term: string) => string
   vtex: boolean
 }
 
 const pharmacies: PharmacyConfig[] = [
-  {
-    name: 'Farmacia SAAS',
-    searchUrl: (barcode) => `https://www.farmaciasaas.com/${encodeURIComponent(barcode)}?_q=${encodeURIComponent(barcode)}&map=ft`,
-    vtex: true,
-  },
-  {
-    name: 'Farmatodo',
-    searchUrl: (barcode) => `https://www.farmatodo.com.ve/buscar?product=${encodeURIComponent(barcode)}&departamento=Todos&filtros=`,
-    vtex: true,
-  },
-  {
-    name: 'Farmaexpress',
-    searchUrl: (barcode) => `https://www.farmaexpress.com/${encodeURIComponent(barcode)}?_q=${encodeURIComponent(barcode)}&map=ft`,
-    vtex: true,
-  },
-  {
-    name: 'FarmaGO',
-    searchUrl: (barcode) => `https://www.farmago.com.ve/website/search?search=${encodeURIComponent(barcode)}&order=name+asc`,
-    vtex: false,
-  },
-  {
-    name: 'TuZonaMarket',
-    searchUrl: (barcode) => `https://tuzonamarket.com/carabobo/buscar?q=${encodeURIComponent(barcode)}`,
-    vtex: false,
-  },
-  {
-    name: 'Farmabien',
-    searchUrl: (barcode) => `https://www.farmabien.com/productos?term=${encodeURIComponent(barcode)}`,
-    vtex: false,
-  },
+  { name: 'Farmacia SAAS', searchUrl: (term) => `https://www.farmaciasaas.com/${encodeURIComponent(term)}?_q=${encodeURIComponent(term)}&map=ft`, vtex: true },
+  { name: 'Farmatodo', searchUrl: (term) => `https://www.farmatodo.com.ve/buscar?product=${encodeURIComponent(term)}&departamento=Todos&filtros=`, vtex: true },
+  { name: 'Farmaexpress', searchUrl: (term) => `https://www.farmaexpress.com/${encodeURIComponent(term)}?_q=${encodeURIComponent(term)}&map=ft`, vtex: true },
+  { name: 'FarmaGO', searchUrl: (term) => `https://www.farmago.com.ve/website/search?search=${encodeURIComponent(term)}&order=name+asc`, vtex: false },
+  { name: 'TuZonaMarket', searchUrl: (term) => `https://tuzonamarket.com/carabobo/buscar?q=${encodeURIComponent(term)}`, vtex: false },
+  { name: 'Farmabien', searchUrl: (term) => `https://www.farmabien.com/productos?term=${encodeURIComponent(term)}`, vtex: false },
 ]
-
-function decodeHtml(value: string) {
-  return value
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;|&apos;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
-    .replace(/&#x([\da-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
-}
-
-function absoluteUrl(value: string, baseUrl: string) {
-  try {
-    const url = new URL(decodeHtml(value), baseUrl)
-    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : null
-  } catch {
-    return null
-  }
-}
-
-function plainText(value: string) {
-  return decodeHtml(value.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim())
-}
-
-function scoreMatch(
-  evidence: MatchEvidence,
-  fields: { name: string | null; description: string | null; imageUrl: string | null; productUrl: string },
-): number {
-  const base = evidence === 'exact-barcode' ? 78 : 66
-  return Math.min(100, base
-    + (fields.name ? 8 : 0)
-    + (fields.description ? 4 : 0)
-    + (fields.imageUrl ? 6 : 0)
-    + (fields.productUrl ? 4 : 0))
-}
-
-function makeMatch(
-  pharmacy: PharmacyName,
-  evidence: MatchEvidence,
-  fields: { productUrl: string; name: string | null; description: string | null; imageUrl: string | null; brand?: string | null },
-): PharmacyMatch {
-  const normalizedUrl = absoluteUrl(fields.productUrl, 'https://example.invalid')
-  const normalizedFields = { ...fields, productUrl: normalizedUrl ?? '' }
-  return {
-    pharmacy,
-    productUrl: normalizedUrl ?? '',
-    found: true,
-    name: fields.name?.slice(0, 180) ?? null,
-    description: fields.description?.slice(0, 1200) ?? null,
-    imageUrl: fields.imageUrl ? absoluteUrl(fields.imageUrl, fields.productUrl) : null,
-    brand: fields.brand?.slice(0, 120) ?? null,
-    score: scoreMatch(evidence, normalizedFields),
-    evidence,
-  }
-}
-
-function parseJsonLdProduct(html: string, barcode: string, pharmacy: PharmacyName, searchUrl: string) {
-  const scripts = html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)
-  for (const script of scripts) {
-    try {
-      const value: unknown = JSON.parse(script[1])
-      const pending: unknown[] = Array.isArray(value) ? [...value] : [value]
-      while (pending.length) {
-        const current = pending.shift()
-        if (!current || typeof current !== 'object') continue
-        if (Array.isArray(current)) {
-          pending.push(...current)
-          continue
-        }
-        const record = current as Record<string, unknown>
-        const type = record['@type']
-        const isProduct = type === 'Product' || (Array.isArray(type) && type.includes('Product'))
-        const identifiers = [record.gtin, record.gtin8, record.gtin12, record.gtin13, record.gtin14, record.sku]
-        const matchingOffer = record.offers && typeof record.offers === 'object' && !Array.isArray(record.offers)
-          ? record.offers as Record<string, unknown>
-          : null
-        const matchesBarcode = [...identifiers, matchingOffer?.gtin, matchingOffer?.sku].some((value) => String(value ?? '').trim() === barcode)
-        if (isProduct && matchesBarcode) {
-          const productUrl = typeof record.url === 'string' ? absoluteUrl(record.url, searchUrl) ?? searchUrl : searchUrl
-          const image = typeof record.image === 'string'
-            ? record.image
-            : Array.isArray(record.image) ? record.image.find((entry): entry is string => typeof entry === 'string') ?? null : null
-          return makeMatch(pharmacy, 'exact-barcode', {
-            productUrl,
-            name: typeof record.name === 'string' ? record.name : null,
-            description: typeof record.description === 'string' ? record.description : null,
-            imageUrl: image,
-            brand: typeof record.brand === 'string'
-              ? record.brand
-              : record.brand && typeof record.brand === 'object' && 'name' in record.brand
-                ? String(record.brand.name)
-                : null,
-          })
-        }
-        if (record['@graph']) pending.push(record['@graph'])
-      }
-    } catch {
-      continue
-    }
-  }
-  return null
-}
-
-function findStoreProduct(value: unknown, barcode: string) {
-  if (!Array.isArray(value)) return null
-  for (const entry of value) {
-    if (!entry || typeof entry !== 'object') continue
-    const product = entry as StoreProduct
-    const exactItem = product.items?.find((item) =>
-      item.ean?.trim() === barcode
-      || item.itemId?.trim() === barcode
-      || item.referenceId?.some((reference) => reference.Value?.trim() === barcode))
-    if (exactItem) return { product, item: exactItem }
-  }
-  return null
-}
-
-function parseExactProductLink(html: string, barcode: string, pharmacy: PharmacyName, searchUrl: string) {
-  const anchors = html.matchAll(/<a\b([^>]*href=(?:"([^"]*)"|'([^']*)')[^>]*)>([\s\S]*?)<\/a>/gi)
-  for (const anchor of anchors) {
-    const href = decodeHtml(anchor[2] ?? anchor[3] ?? '')
-    if (!new RegExp(`(?:^|[/-])${barcode}(?:[/-]|$)`).test(href)) continue
-    const contents = anchor[4]
-    const heading = contents.match(/<(?:h[1-6]|div|span)\b[^>]*class=["'][^"']*(?:product[_-]?(?:name|title)|h6)[^"']*["'][^>]*>([\s\S]*?)<\/(?:h[1-6]|div|span)>/i)
-    const name = plainText(heading?.[1] ?? contents)
-    if (!name) continue
-    const imageTag = contents.match(/<img\b[^>]*>/i)?.[0]
-    const imageSource = imageTag?.match(/\b(?:src|data-src)=["']([^"']+)["']/i)?.[1] ?? null
-    const productUrl = absoluteUrl(href, searchUrl) ?? searchUrl
-    return makeMatch(pharmacy, 'barcode-in-product-url', {
-      productUrl,
-      name,
-      description: null,
-      imageUrl: imageSource ? absoluteUrl(imageSource, searchUrl) : null,
-    })
-  }
-  return null
-}
 
 function normalizeName(value: string) {
   return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
@@ -217,54 +48,163 @@ function normalizeName(value: string) {
     .replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean)
 }
 
-function corroborates(left: string | null, right: string | null) {
-  if (!left || !right) return false
-  const first = new Set(normalizeName(left))
-  const second = new Set(normalizeName(right))
-  if (!first.size || !second.size) return false
-  const shared = [...first].filter((token) => second.has(token)).length
-  return shared / Math.min(first.size, second.size) >= 0.6
+function nameScore(name: string, query: string) {
+  const queryTokens = new Set(normalizeName(query))
+  const nameTokens = normalizeName(name)
+  if (!queryTokens.size || !nameTokens.length) return 0
+  return Math.round(100 * nameTokens.filter((token) => queryTokens.has(token)).length / queryTokens.size)
 }
 
-async function fetchSearchPage(url: string) {
-  const response = await fetch(url, {
-    headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'Mozilla/5.0 DentaStock product lookup' },
-    signal: AbortSignal.timeout(10_000),
-    cache: 'no-store',
-  })
-  if (!response.ok) throw new Error(`Search page returned status ${response.status}`)
-  return response.text()
+function decodeHtml(value: string) {
+  return value.replace(/&amp;/gi, '&').replace(/&quot;/gi, '"').replace(/&#39;|&apos;/gi, "'")
+    .replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/&#x([\da-f]+);/gi, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 16)))
 }
 
-async function searchPharmacy(config: PharmacyConfig, barcode: string): Promise<PharmacyMatch> {
-  const searchUrl = config.searchUrl(barcode)
+function absoluteUrl(value: string, base: string) {
+  try {
+    const url = new URL(decodeHtml(value), base)
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : null
+  } catch {
+    return null
+  }
+}
+
+function makeMatch(pharmacy: PharmacyName, fields: Omit<PharmacyMatch, 'pharmacy' | 'found' | 'score'>, score: number): PharmacyMatch {
+  return {
+    pharmacy,
+    found: true,
+    ...fields,
+    name: fields.name?.slice(0, 180) ?? null,
+    description: fields.description?.slice(0, 1200) ?? null,
+    imageUrl: fields.imageUrl ? absoluteUrl(fields.imageUrl, fields.productUrl || 'https://example.invalid') : null,
+    score: Math.min(100, score
+      + (fields.name ? 8 : 0)
+      + (fields.description ? 4 : 0)
+      + (fields.imageUrl ? 6 : 0)
+      + (fields.productUrl ? 4 : 0)),
+  }
+}
+
+function findStoreProducts(value: unknown, term: string, barcode: string, pharmacy: PharmacyName, origin: string) {
+  if (!Array.isArray(value)) return []
+  const matches: PharmacyMatch[] = []
+  for (const entry of value) {
+    if (!entry || typeof entry !== 'object') continue
+    const product = entry as StoreProduct
+    const exactItem = barcode ? product.items?.find((item) =>
+      item.ean?.trim() === barcode || item.itemId?.trim() === barcode
+      || item.referenceId?.some((ref) => ref.Value?.trim() === barcode)) : undefined
+    const item = exactItem ?? product.items?.[0]
+    const name = product.productName || product.name || null
+    const relevance = name ? nameScore(name, term) : 0
+    if (!item || !name || (barcode && !exactItem) || (!barcode && relevance < 35)) continue
+    const link = product.link ? absoluteUrl(product.link, origin) : null
+    const image = item.images?.[0]?.imageUrl ?? null
+    matches.push(makeMatch(pharmacy, {
+      productUrl: link ?? '',
+      name,
+      description: product.description ?? null,
+      imageUrl: image,
+      brand: product.brand ?? null,
+    }, exactItem ? 78 : Math.max(30, relevance - 12)))
+  }
+  return matches.sort((left, right) => right.score - left.score).slice(0, 3)
+}
+
+function parseProductPage(html: string, config: PharmacyConfig, term: string, barcode: string, searchUrl: string) {
+  const exactBarcode = barcode ? new RegExp(`(?:^|[/-])${barcode}(?:[/-]|$)`) : null
+  const candidates: PharmacyMatch[] = []
+  const anchors = html.matchAll(/<a\b([^>]*href=(?:"([^"]*)"|'([^']*)')[^>]*)>([\s\S]*?)<\/a>/gi)
+  for (const anchor of anchors) {
+    const href = decodeHtml(anchor[2] ?? anchor[3] ?? '')
+    const contents = anchor[4]
+    const titleMatch = contents.match(/<(?:h[1-6]|div|span)\b[^>]*class=["'][^"']*(?:product[_-]?(?:name|title)|h6)[^"']*["'][^>]*>([\s\S]*?)<\/(?:h[1-6]|div|span)>/i)
+    const title = decodeHtml((titleMatch?.[1] ?? contents).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim())
+    const hasExactBarcode = Boolean(exactBarcode?.test(href))
+    const relevance = nameScore(title, term)
+    if (!title || (barcode && !hasExactBarcode) || (!barcode && relevance < 35)) continue
+    const imageTag = contents.match(/<img\b[^>]*>/i)?.[0]
+    const rawImage = imageTag?.match(/\b(?:src|data-src)=["']([^"']+)["']/i)?.[1]
+    candidates.push(makeMatch(config.name, {
+      productUrl: absoluteUrl(href, searchUrl) ?? searchUrl,
+      name: title,
+      description: null,
+      imageUrl: rawImage ? absoluteUrl(rawImage, searchUrl) : null,
+      brand: null,
+    }, hasExactBarcode ? 66 : Math.max(25, relevance - 18)))
+  }
+
+  return candidates.sort((left, right) => right.score - left.score).slice(0, 3)
+}
+
+function parseJsonLdProducts(html: string, config: PharmacyConfig, term: string, barcode: string, searchUrl: string) {
+  const matches: PharmacyMatch[] = []
+  for (const script of html.matchAll(/<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi)) {
+    try {
+      const root: unknown = JSON.parse(script[1])
+      const pending: unknown[] = Array.isArray(root) ? [...root] : [root]
+      while (pending.length) {
+        const value = pending.shift()
+        if (!value || typeof value !== 'object') continue
+        if (Array.isArray(value)) {
+          pending.push(...value)
+          continue
+        }
+        const record = value as Record<string, unknown>
+        const type = record['@type']
+        if (type === 'Product' || (Array.isArray(type) && type.includes('Product'))) {
+          const identifiers = [record.gtin, record.gtin8, record.gtin12, record.gtin13, record.gtin14, record.sku]
+          const offer = record.offers && typeof record.offers === 'object' && !Array.isArray(record.offers)
+            ? record.offers as Record<string, unknown>
+            : null
+          const exact = Boolean(barcode) && [...identifiers, offer?.gtin, offer?.sku].some((id) => String(id ?? '').trim() === barcode)
+          const name = typeof record.name === 'string' ? record.name : ''
+          const relevance = nameScore(name, term)
+          if (exact || (!barcode && relevance >= 35)) {
+            const image = typeof record.image === 'string'
+              ? record.image
+              : Array.isArray(record.image) ? record.image.find((entry): entry is string => typeof entry === 'string') : null
+            const brand = typeof record.brand === 'string'
+              ? record.brand
+              : record.brand && typeof record.brand === 'object' && 'name' in record.brand ? String(record.brand.name) : null
+            matches.push(makeMatch(config.name, {
+              productUrl: typeof record.url === 'string' ? absoluteUrl(record.url, searchUrl) ?? searchUrl : searchUrl,
+              name,
+              description: typeof record.description === 'string' ? record.description : null,
+              imageUrl: image ?? null,
+              brand,
+            }, exact ? 78 : Math.max(25, relevance - 12)))
+          }
+        }
+        if (record['@graph']) pending.push(record['@graph'])
+      }
+    } catch {
+      continue
+    }
+  }
+  return matches.sort((left, right) => right.score - left.score).slice(0, 3)
+}
+
+async function searchPharmacy(config: PharmacyConfig, term: string, barcode: string): Promise<PharmacyMatch[]> {
+  const searchUrl = config.searchUrl(term)
   const origin = new URL(searchUrl).origin
-
   if (config.vtex) {
-    const apiUrls = [
-      `${origin}/api/catalog_system/pub/products/search?ft=${encodeURIComponent(barcode)}&_from=0&_to=9`,
-      `${origin}/api/catalog_system/pub/products/search?fq=alternateIds_Ean:${encodeURIComponent(barcode)}&_from=0&_to=9`,
+    const endpoints = [
+      `${origin}/api/catalog_system/pub/products/search?ft=${encodeURIComponent(term)}&_from=0&_to=19`,
+      ...(barcode ? [`${origin}/api/catalog_system/pub/products/search?fq=alternateIds_Ean:${encodeURIComponent(barcode)}&_from=0&_to=19`] : []),
     ]
-    for (const apiUrl of apiUrls) {
+    for (const endpoint of endpoints) {
       try {
-        const response = await fetch(apiUrl, {
+        const response = await fetch(endpoint, {
           headers: { Accept: 'application/json', 'User-Agent': 'Mozilla/5.0 DentaStock product lookup' },
           signal: AbortSignal.timeout(7_000),
           cache: 'no-store',
         })
         if (!response.ok) continue
-        const result = findStoreProduct(await response.json(), barcode)
-        if (!result) continue
-        const { product, item } = result
-        const productUrl = product.link ? absoluteUrl(product.link, origin) ?? searchUrl : searchUrl
-        const imageUrl = item.images?.[0]?.imageUrl ? absoluteUrl(item.images[0].imageUrl, origin) : null
-        return makeMatch(config.name, 'exact-barcode', {
-          productUrl,
-          name: product.productName || product.name || null,
-          description: product.description || null,
-          imageUrl,
-          brand: product.brand || null,
-        })
+        const matches = findStoreProducts(await response.json(), term, barcode, config.name, origin)
+        if (matches.length) return matches
       } catch (error) {
         console.error(`${config.name} catalog API failed`, error instanceof Error ? error.message : 'Unknown error')
       }
@@ -272,25 +212,22 @@ async function searchPharmacy(config: PharmacyConfig, barcode: string): Promise<
   }
 
   try {
-    const html = await fetchSearchPage(searchUrl)
-    const structuredMatch = parseJsonLdProduct(html, barcode, config.name, searchUrl)
-    if (structuredMatch) return structuredMatch
-    const exactProductLink = parseExactProductLink(html, barcode, config.name, searchUrl)
-    if (exactProductLink) return exactProductLink
+    const response = await fetch(searchUrl, {
+      headers: { Accept: 'text/html,application/xhtml+xml', 'User-Agent': 'Mozilla/5.0 DentaStock product lookup' },
+      signal: AbortSignal.timeout(10_000),
+      cache: 'no-store',
+    })
+    if (!response.ok) throw new Error(`Search page returned status ${response.status}`)
+    const html = await response.text()
+    const jsonLdMatches = parseJsonLdProducts(html, config, term, barcode, searchUrl)
+    const linkMatches = parseProductPage(html, config, term, barcode, searchUrl)
+    return [...jsonLdMatches, ...linkMatches]
+      .filter((match, index, all) => all.findIndex((other) => other.productUrl === match.productUrl) === index)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 3)
   } catch (error) {
     console.error(`${config.name} search failed`, error instanceof Error ? error.message : 'Unknown error')
-  }
-
-  return {
-    pharmacy: config.name,
-    productUrl: searchUrl,
-    found: false,
-    name: null,
-    description: null,
-    imageUrl: null,
-    brand: null,
-    score: 0,
-    evidence: null,
+    return []
   }
 }
 
@@ -299,45 +236,32 @@ export async function GET(request: Request) {
   const { data: { user }, error: authError } = await supabase.auth.getUser()
   if (authError || !user) return NextResponse.json({ error: 'Sign in to search pharmacy catalogs.' }, { status: 401 })
 
-  const barcode = new URL(request.url).searchParams.get('barcode')?.trim() ?? ''
-  if (!/^[\da-zA-Z-]{1,128}$/.test(barcode)) {
-    return NextResponse.json({ error: 'Enter a valid product barcode.' }, { status: 400 })
+  const params = new URL(request.url).searchParams
+  const barcode = params.get('barcode')?.trim().slice(0, 128) ?? ''
+  const query = params.get('q')?.trim().slice(0, 160) ?? ''
+  const term = barcode || query
+  if (!term || (barcode && !/^[\da-zA-Z-]{1,128}$/.test(barcode))) {
+    return NextResponse.json({ error: 'Enter a product name or a valid barcode.' }, { status: 400 })
   }
 
-  const settled = await Promise.allSettled(pharmacies.map((pharmacy) => searchPharmacy(pharmacy, barcode)))
+  const settled = await Promise.allSettled(pharmacies.map((pharmacy) => searchPharmacy(pharmacy, term, barcode)))
   const results: PharmacyMatch[] = []
   const failedPharmacies: PharmacyName[] = []
-  for (const [index, result] of settled.entries()) {
-    if (result.status === 'fulfilled') results.push(result.value)
+  settled.forEach((result, index) => {
+    if (result.status === 'fulfilled') results.push(...result.value)
     else {
       const pharmacy = pharmacies[index]
       failedPharmacies.push(pharmacy.name)
       console.error(`${pharmacy.name} search failed`, result.reason instanceof Error ? result.reason.message : 'Unknown error')
-      results.push({
-        pharmacy: pharmacy.name,
-        productUrl: pharmacy.searchUrl(barcode),
-        found: false,
-        name: null,
-        description: null,
-        imageUrl: null,
-        brand: null,
-        score: 0,
-        evidence: null,
-      })
     }
-  }
+  })
 
   for (const result of results) {
-    if (!result.found) continue
-    const corroborationCount = results.filter((other) =>
-      other.found && other.pharmacy !== result.pharmacy && corroborates(result.name, other.name),
-    ).length
-    result.score = Math.min(100, result.score + Math.min(12, corroborationCount * 6))
+    const corroborations = results.filter((other) => other.pharmacy !== result.pharmacy
+      && nameScore(result.name ?? '', other.name ?? '') >= 60).length
+    result.score = Math.min(100, result.score + Math.min(12, corroborations * 6))
   }
-
-  const bestMatch = results
-    .filter((result) => result.found && result.name)
-    .sort((left, right) => right.score - left.score)[0] ?? null
-
-  return NextResponse.json({ results, bestMatch, failedPharmacies })
+  results.sort((left, right) => right.score - left.score)
+  const suggestions = results.slice(0, 3)
+  return NextResponse.json({ suggestions, bestMatch: suggestions[0] ?? null, failedPharmacies })
 }
