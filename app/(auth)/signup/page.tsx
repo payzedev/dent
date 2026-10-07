@@ -9,14 +9,22 @@ export default function Signup() {
   const t = useTranslations()
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false)
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setError('')
     const form = new FormData(event.currentTarget)
+    const password = String(form.get('password'))
+    const confirmation = String(form.get('password_confirmation'))
+    if (password !== confirmation) {
+      setError(t('passwordsDoNotMatch'))
+      return
+    }
     const { error: signupError } = await createClient().auth.signUp({
       email: String(form.get('email')),
-      password: String(form.get('password')),
+      password,
       options: { data: { full_name: String(form.get('name')).trim(), clinic_name: String(form.get('clinic_name')).trim() } },
     })
     if (signupError) { setError(signupError.message); return }
@@ -29,7 +37,8 @@ export default function Signup() {
       <label>{t('name')}<input name="name" required maxLength={120} autoComplete="name" /></label>
       <label>{t('clinicName')}<input name="clinic_name" required maxLength={160} autoComplete="organization" /></label>
       <label>{t('email')}<input name="email" type="email" required autoComplete="email" /></label>
-      <label>{t('password')}<input name="password" type="password" minLength={8} required autoComplete="new-password" /></label>
+      <label>{t('password')}<span className="password-control"><input name="password" type={showPassword ? 'text' : 'password'} minLength={8} required autoComplete="new-password" /><button type="button" className="password-toggle" aria-label={t(showPassword ? 'hidePassword' : 'showPassword')} onClick={() => setShowPassword((visible) => !visible)}>{t(showPassword ? 'hidePassword' : 'showPassword')}</button></span></label>
+      <label>{t('confirmPassword')}<span className="password-control"><input name="password_confirmation" type={showConfirmPassword ? 'text' : 'password'} minLength={8} required autoComplete="new-password" /><button type="button" className="password-toggle" aria-label={t(showConfirmPassword ? 'hidePassword' : 'showPassword')} onClick={() => setShowConfirmPassword((visible) => !visible)}>{t(showConfirmPassword ? 'hidePassword' : 'showPassword')}</button></span></label>
       {error && <p role="alert" className="error">{error}</p>}
       <button className="primary-button full">{t('signup')}</button>
     </form>

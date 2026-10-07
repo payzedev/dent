@@ -27,4 +27,11 @@ update public.profiles set role='admin' where id=(select id from auth.users wher
 create index if not exists inventory_items_owner_idx on public.inventory_items(owner_id); create index if not exists inventory_items_category_idx on public.inventory_items(category_id);
 create or replace function public.is_admin() returns boolean language sql security invoker set search_path=public as $$ select exists(select 1 from public.profiles where id=(select auth.uid()) and role='admin') $$;
 create or replace function public.get_home_stats() returns table(slug text,name_en text,name_es text,color_hex text,units bigint,distinct_items bigint,missing_count bigint,expiring_count bigint,total_units bigint,total_missing bigint,total_expiring bigint) language sql security invoker set search_path=public as $$ with grouped as (select c.slug,c.name_en,c.name_es,c.color_hex,coalesce(sum(i.quantity),0)::bigint units,count(i.id)::bigint distinct_items,count(i.id) filter(where i.quantity=0)::bigint missing_count,count(i.id) filter(where i.expiry_date is not null and i.expiry_date between current_date and current_date+30)::bigint expiring_count from public.categories c left join public.inventory_items i on i.category_id=c.id and i.owner_id=(select auth.uid()) where c.is_active group by c.slug,c.name_en,c.name_es,c.color_hex,c.sort_order order by c.sort_order) select g.*,(select coalesce(sum(distinct_items),0) from grouped),(select coalesce(sum(missing_count),0) from grouped),(select coalesce(sum(expiring_count),0) from grouped) from grouped g; $$;
-revoke all on function public.get_home_stats() from public; grant execute on function public.get_home_stats() to authenticated; revoke all on function public.handle_new_user() from public; grant execute on function public.handle_new_user() to postgres; enable row level security on public.profiles; enable row level security on public.categories; enable row level security on public.inventory_items; alter table public.inventory_items drop column if exists category;
+revoke all on function public.get_home_stats() from public;
+grant execute on function public.get_home_stats() to authenticated;
+revoke all on function public.handle_new_user() from public;
+grant execute on function public.handle_new_user() to postgres;
+alter table public.profiles enable row level security;
+alter table public.categories enable row level security;
+alter table public.inventory_items enable row level security;
+alter table public.inventory_items drop column if exists category;

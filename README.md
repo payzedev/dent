@@ -7,6 +7,7 @@ DentaStock is a bilingual (English/Spanish), responsive dental-clinic inventory 
 1. Configure the Supabase project URL and publishable key:
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (or the legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY`)
+   - `NVIDIA_NIM_API_KEY` (server-only secret for optional DeepSeek product lookup; never use a `NEXT_PUBLIC_` prefix)
 2. Enable **Confirm email** in Supabase Auth.
 3. Apply the SQL scripts in order on a fresh database:
    `scripts/001_schema.sql`, `scripts/002_rls_policies.sql`, `scripts/003_clinics_catalog_support.sql`, `scripts/004_clinic_invitation_hardening.sql`, `scripts/005_product_categories_and_presentations.sql`.
@@ -22,6 +23,8 @@ The third and fourth SQL scripts create the per-clinic membership model, product
 - Inventory supports name/barcode search, one or more categories per item, category/status filters, item details, edits and quantity adjustments.
 - Products can be tracked as individual items, sets or boxes; the selected presentation is reflected with the available quantity.
 - The add-item form can scan a barcode with the device camera or accept a typed barcode; camera access requires HTTPS and browser permission. Approved product details, categories, presentation and images are reused unless the clinic uploads its own image.
+- Product lookup checks the approved Supabase catalog first. If there is no match, an authenticated server endpoint can use NVIDIA NIM's `deepseek-ai/deepseek-v4.1-flash` model to suggest details from a barcode, product name or uploaded image; clinic staff must confirm the result before form fields are filled. Uploaded photos sent for AI identification are not persisted by the AI endpoint; the browser image upload is used only if the user later saves the inventory item.
+- DeepSeek suggestions use model knowledge and image recognition, not live web search. It does not retrieve an official product photo; the confirmation dialog uses an approved catalog photo when available or previews the photo the user uploaded. AI-suggested details should be verified before saving.
 - Accounts can update their clinic profile, request an email change, change a password, invite clinic staff and send support reports with screenshots.
 - Only the confirmed `remgoficial@gmail.com` account receives the admin navigation and database-level admin permissions.
 - Page and form copy is maintained in `messages/en.json` and `messages/es.json`.
