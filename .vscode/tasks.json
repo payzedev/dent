@@ -1,0 +1,167 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Validate DentaStock build",
+			"type": "shell",
+			"command": ".\\node_modules\\.bin\\next.cmd",
+			"args": [
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Install barcode scanner",
+			"type": "shell",
+			"command": "pnpm",
+			"args": [
+				"add",
+				"@zxing/browser"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect translation file endings",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require('fs');for(const f of ['messages/en.json','messages/es.json']){const s=fs.readFileSync(f,'utf8');console.log(f,JSON.stringify(s.slice(-500)))}"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Read English translations ending",
+			"type": "shell",
+			"command": "Select-String",
+			"args": [
+				"-Path",
+				"messages\\en.json",
+				"-Pattern",
+				".{0,500}$"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Read Spanish translations ending",
+			"type": "shell",
+			"command": "Select-String",
+			"args": [
+				"-Path",
+				"messages\\es.json",
+				"-Pattern",
+				".{0,500}$"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Read Spanish translation suffix",
+			"type": "shell",
+			"command": "Get-Content messages\\es.json -Raw | ForEach-Object { $_.Substring($_.Length - 500) }",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Add Spanish translations",
+			"type": "shell",
+			"command": "node -e",
+			"args": [
+				"const fs=require(\"fs\"); const path=\"messages/es.json\"; const messages=JSON.parse(fs.readFileSync(path,\"utf8\")); Object.assign(messages,{scanBarcode:\"Escanear código de barras\",scannerReady:\"Apunta la cámara al código de barras.\",cameraPermissionHint:\"Permite el acceso a la cámara y coloca el código dentro del marco. El acceso requiere HTTPS.\",cameraUnavailable:\"No se pudo iniciar la cámara. Comprueba el permiso y usa una conexión segura HTTPS.\",categories:\"Categorías\",selectMultipleCategories:\"Selecciona una o varias categorías.\",presentation:\"Presentación\",individual:\"Individual\",set:\"Set\",box:\"Caja\",quantityPresentation:\"{count} × {presentation}\"}); fs.writeFileSync(path,JSON.stringify(messages))"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Update Spanish language entries",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"-e",
+				"const fs=require(\"fs\"); const path=\"messages/es.json\"; const messages=JSON.parse(fs.readFileSync(path,\"utf8\")); Object.assign(messages,{scanBarcode:\"Escanear código de barras\",scannerReady:\"Apunta la cámara al código de barras.\",cameraPermissionHint:\"Permite el acceso a la cámara y coloca el código dentro del marco. El acceso requiere HTTPS.\",cameraUnavailable:\"No se pudo iniciar la cámara. Comprueba el permiso y usa una conexión segura HTTPS.\",categories:\"Categorías\",selectMultipleCategories:\"Selecciona una o varias categorías.\",presentation:\"Presentación\",individual:\"Individual\",set:\"Set\",box:\"Caja\",quantityPresentation:\"{count} × {presentation}\"}); fs.writeFileSync(path,JSON.stringify(messages))"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Write Spanish translation entries",
+			"type": "shell",
+			"command": "$script = @'\nconst fs = require(\"fs\");\nconst path = \"messages/es.json\";\nconst messages = JSON.parse(fs.readFileSync(path, \"utf8\"));\nObject.assign(messages, {\n  scanBarcode: \"Escanear código de barras\",\n  scannerReady: \"Apunta la cámara al código de barras.\",\n  cameraPermissionHint: \"Permite el acceso a la cámara y coloca el código dentro del marco. El acceso requiere HTTPS.\",\n  cameraUnavailable: \"No se pudo iniciar la cámara. Comprueba el permiso y usa una conexión segura HTTPS.\",\n  categories: \"Categorías\",\n  selectMultipleCategories: \"Selecciona una o varias categorías.\",\n  presentation: \"Presentación\",\n  individual: \"Individual\",\n  set: \"Set\",\n  box: \"Caja\",\n  quantityPresentation: \"{count} × {presentation}\"\n});\nfs.writeFileSync(path, JSON.stringify(messages));\n'@\nnode -e $script",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Retry Spanish translation entries",
+			"type": "shell",
+			"command": "$script = @'\nconst fs = require(\"fs\");\nconst path = \"messages/es.json\";\nconst messages = JSON.parse(fs.readFileSync(path, \"utf8\"));\nObject.assign(messages, { scanBarcode: \"Escanear código de barras\", scannerReady: \"Apunta la cámara al código de barras.\", cameraPermissionHint: \"Permite el acceso a la cámara y coloca el código dentro del marco. El acceso requiere HTTPS.\", cameraUnavailable: \"No se pudo iniciar la cámara. Comprueba el permiso y usa una conexión segura HTTPS.\", categories: \"Categorías\", selectMultipleCategories: \"Selecciona una o varias categorías.\", presentation: \"Presentación\", individual: \"Individual\", set: \"Set\", box: \"Caja\", quantityPresentation: \"{count} × {presentation}\" });\nfs.writeFileSync(path, JSON.stringify(messages));\n'@\nnode -e \"$script\"",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Add Spanish translations safely",
+			"type": "shell",
+			"command": "@'\nconst fs = require(\"fs\");\nconst path = \"messages/es.json\";\nconst messages = JSON.parse(fs.readFileSync(path, \"utf8\"));\nObject.assign(messages, { scanBarcode: \"Escanear código de barras\", scannerReady: \"Apunta la cámara al código de barras.\", cameraPermissionHint: \"Permite el acceso a la cámara y coloca el código dentro del marco. El acceso requiere HTTPS.\", cameraUnavailable: \"No se pudo iniciar la cámara. Comprueba el permiso y usa una conexión segura HTTPS.\", categories: \"Categorías\", selectMultipleCategories: \"Selecciona una o varias categorías.\", presentation: \"Presentación\", individual: \"Individual\", set: \"Set\", box: \"Caja\", quantityPresentation: \"{count} × {presentation}\" });\nfs.writeFileSync(path, JSON.stringify(messages));\n'@ | Set-Content -Path scripts\\add-translations.tmp.cjs -Encoding utf8\nnode scripts\\add-translations.tmp.cjs\nRemove-Item scripts\\add-translations.tmp.cjs",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Apply Spanish language entries",
+			"type": "shell",
+			"command": "node",
+			"args": [
+				"scripts\\update-translations.tmp.js"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Build DentaStock updates",
+			"type": "shell",
+			"command": ".\\node_modules\\.bin\\next.cmd",
+			"args": [
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Inspect ZXing camera API",
+			"type": "shell",
+			"command": "Get-ChildItem node_modules\\@zxing\\browser -Recurse -Filter *.d.ts | Select-String -Pattern \"decodeFromConstraints|decodeFromVideoDevice\" | Select-Object -First 12",
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Final DentaStock build",
+			"type": "shell",
+			"command": ".\\node_modules\\.bin\\next.cmd",
+			"args": [
+				"build"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Check patch whitespace",
+			"type": "shell",
+			"command": "git",
+			"args": [
+				"diff",
+				"--check"
+			],
+			"isBackground": false,
+			"problemMatcher": []
+		},
+		{
+			"label": "Verify no translation temp files",
+			"type": "shell",
+			"command": "Test-Path scripts\\update-translations.tmp.js; Test-Path scripts\\add-translations.tmp.cjs",
+			"isBackground": false,
+			"problemMatcher": []
+		}
+	]
+}
