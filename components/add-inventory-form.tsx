@@ -183,7 +183,10 @@ export function AddInventoryForm() {
     try {
       const response = await fetch('/api/product-assist', { method: 'POST', body: form })
       const result = await response.json() as { error?: string; suggestion?: ProductSuggestion; suggestions?: ProductSuggestion[] }
-      if (!response.ok) throw new Error(result.error || t('photoAnalysisFailed'))
+      if (!response.ok) {
+        if (response.status === 429) throw new Error(t('aiProviderRateLimited'))
+        throw new Error(result.error || t('photoAnalysisFailed'))
+      }
       const suggestion = result.suggestion ?? result.suggestions?.[0]
       if (!suggestion?.name) throw new Error(t('photoAnalysisFailed'))
       if (generation !== photoAnalysisGeneration.current) return
@@ -642,7 +645,7 @@ export function AddInventoryForm() {
           </div>
         </div>
         {photo && <div className="photo-analysis-status"><p className="field-hint">{photoAnalyzing ? t('analyzingProductPhoto') : t('photoLookupPrivacy')}</p>
-          {photoAnalysisError && <p role="alert" className="error-message">{photoAnalysisError}</p>}
+          {photoAnalysisError && <div><p role="alert" className="error-message">{photoAnalysisError}</p><button type="button" className="text-button" disabled={photoAnalyzing} onClick={() => void analyzeProductPhoto(photo)}>{t('retryPhotoAnalysis')}</button></div>}
           {photoSuggestion && !photoAnalyzing && <div><span>{t('photoAnalysisPrefilled')}</span><button type="button" className="text-button danger-text" onClick={() => void rejectCandidate({
             source: 'ai',
             sourceName: t('aiSource'),

@@ -63,6 +63,16 @@ type GeminiResponse = {
   output?: Array<{ type?: string; content?: Array<{ type?: string; text?: string }> }>
 }
 
+class ProviderRequestError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly retryAfter: string | null = null,
+  ) {
+    super(message)
+  }
+}
+
 function jsonError(message: string, status: number) {
   return NextResponse.json({ error: message }, { status })
 }
@@ -182,7 +192,11 @@ async function askGemini(apiKey: string, prompt: string, imageDataUrl?: string):
   })
   if (!response.ok) {
     console.error('Gemini product lookup returned an error', response.status)
-    throw new Error(`Gemini product lookup failed with status ${response.status}`)
+    throw new ProviderRequestError(
+      `Gemini product lookup failed with status ${response.status}`,
+      response.status,
+      response.headers.get('retry-after'),
+    )
   }
 
   const result = await response.json() as GeminiResponse
@@ -376,6 +390,8 @@ export async function POST(request: Request) {
 
     let suggestion: Suggestion | null = null
     let analysisFailure = ''
+    let rateLimitRetryAfter: string | null = null
+    let geminiRateLimited = false
     if (apiKey) {
       try {
         suggestion = readSuggestion(parseJsonResponse(await askModel(apiKey, prompt, imageDataUrl)), validSlugs)
@@ -389,10 +405,43 @@ export async function POST(request: Request) {
         suggestion = readSuggestion(parseJsonResponse(await askGemini(geminiApiKey, prompt, imageDataUrl)), validSlugs)
       } catch (error) {
         analysisFailure = error instanceof Error ? error.message : 'Gemini image analysis failed'
+        if (error instanceof ProviderRequestError && error.status === 429) {
+          geminiRateLimited = true
+          rateLimitRetryAfter = error.retryAfter
+        }
         console.error('Gemini package photo analysis failed', analysisFailure)
       }
     }
+    if (!suggestion && deepSeekApiKey && (query || barcode)) {
+      try {
+        const textFallbackPrompt = [
+          'Create a cautious dental-product suggestion using only the user-provided text below.',
+          'No image is available to this provider. Do not claim to have seen or analyzed the package photo.',
+          'Do not invent details. Return empty strings, null barcode/brand, and an empty category_slugs array for anything not supported by the supplied text.',
+          'Return JSON only with keys name, description, barcode, brand, product_type, model, color, category_slugs, presentation.',
+          'Allowed category slugs: ' + JSON.stringify(categoryOptions),
+          'presentation must be individual, set, or box.',
+          `Product name or search text: ${query || '(not provided)'}`,
+          `Barcode: ${barcode || '(not provided)'}`,
+        ].join('\n')
+        suggestion = readSuggestion(parseJsonResponse(await askOfficialDeepSeek(deepSeekApiKey, textFallbackPrompt)), validSlugs)
+        if (suggestion && !suggestion.barcode && barcode) suggestion.barcode = barcode
+      } catch (error) {
+        analysisFailure = error instanceof Error ? error.message : 'DeepSeek text fallback failed'
+        console.error('DeepSeek photo-analysis text fallback failed', analysisFailure)
+      }
+    }
     if (!suggestion) {
+      if (geminiRateLimited || analysisFailure.includes('status 429')) {
+        return NextResponse.json({
+          error: query || barcode
+            ? 'The image-analysis provider is temporarily rate-limited. NVIDIA_NIM_API_KEY and DeepSeek were also tried; wait before retrying.'
+            : 'The image-analysis provider is temporarily rate-limited. Configure NVIDIA_NIM_API_KEY, or enter a product name/barcode to allow DeepSeek text lookup.',
+        }, {
+          status: 429,
+          headers: { 'Retry-After': rateLimitRetryAfter || '60' },
+        })
+      }
       return jsonError(analysisFailure || 'Image analysis requires NVIDIA_NIM_API_KEY or GEMINI_API_KEY. Configure an image-capable provider and try again.', 502)
     }
     if (!suggestion.barcode && barcode) suggestion.barcode = barcode
@@ -510,7 +559,7 @@ export async function POST(request: Request) {
       : Promise.resolve(null),
   ])
 
-  if (geminiApiKey && !geminiImageSuggestion) {
+  if (geminiApiKey && !geminiImageSuggestion && !modelSuggestions.suggestions.length) {
     const evidence = exaResult?.evidence ?? []
     const synthesisPrompt = [
       prompt,
