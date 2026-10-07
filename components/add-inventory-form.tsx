@@ -170,7 +170,7 @@ export function AddInventoryForm() {
   async function createClinicBrand() {
     const name = newBrandName.trim()
     if (!name || !clinicId) return
-    const existing = brands.find((brand) => brand.name.toLocaleLowerCase() === name.toLocaleLowerCase())
+    const existing = brands.find((brand) => normalizeLookupKey(brand.name) === normalizeLookupKey(name))
     if (existing) {
       setBrandId(existing.id)
       setNewBrandName('')
@@ -353,7 +353,7 @@ export function AddInventoryForm() {
         setPrefillVersion((version) => version + 1)
         setQuery(bestPharmacyMatch.suggestion.name)
         setBarcode(bestPharmacyMatch.suggestion.barcode ?? inferredBarcode)
-        const matchingBrand = brands.find((brand) => brand.name.toLocaleLowerCase() === bestPharmacyMatch.suggestion.brand?.toLocaleLowerCase())
+        const matchingBrand = brands.find((brand) => normalizeLookupKey(brand.name) === normalizeLookupKey(bestPharmacyMatch.suggestion.brand ?? ''))
         setBrandId(matchingBrand?.id ?? '')
         setNewBrandName(bestPharmacyMatch.suggestion.brand && !matchingBrand ? bestPharmacyMatch.suggestion.brand : '')
         setCategoryIds(bestPharmacyMatch.suggestion.category_slugs.flatMap((slug) => {
@@ -386,7 +386,7 @@ export function AddInventoryForm() {
     setPrefillVersion((version) => version + 1)
     setQuery(selected.suggestion.name)
     setBarcode(selected.suggestion.barcode ?? barcode)
-    const matchingBrand = brands.find((brand) => brand.name.toLocaleLowerCase() === selected.suggestion.brand?.toLocaleLowerCase())
+    const matchingBrand = brands.find((brand) => normalizeLookupKey(brand.name) === normalizeLookupKey(selected.suggestion.brand ?? ''))
     setBrandId(matchingBrand?.id ?? '')
     setNewBrandName(selected.suggestion.brand && !matchingBrand ? selected.suggestion.brand : '')
     setCategoryIds(selected.suggestion.category_slugs.flatMap((slug) => {

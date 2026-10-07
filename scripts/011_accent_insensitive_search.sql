@@ -1,6 +1,3 @@
-create extension if not exists pg_trgm;
-
-drop index if exists public.catalog_products_name_idx;
 create extension if not exists unaccent;
 
 do $$
@@ -33,6 +30,14 @@ begin
 end
 $$;
 
+drop index if exists public.catalog_products_name_trgm_idx;
+drop index if exists public.inventory_items_name_trgm_idx;
+drop index if exists public.inventory_items_description_trgm_idx;
+drop index if exists public.inventory_items_barcode_trgm_idx;
+drop index if exists public.brands_name_trgm_idx;
+drop index if exists public.categories_name_en_trgm_idx;
+drop index if exists public.categories_name_es_trgm_idx;
+
 do $$
 declare
   opclass_schema text;
@@ -64,19 +69,13 @@ begin
   ] loop
     indexed_table := indexed_columns[1];
     indexed_column := indexed_columns[2];
-    if not exists (
-      select 1 from pg_indexes
-      where schemaname = 'public'
-        and indexname = indexed_table || '_' || indexed_column || '_trgm_idx'
-    ) then
-      execute format(
-        'create index %I on public.%I using gin (public.unaccent_search(%I) %I.gin_trgm_ops)',
-        indexed_table || '_' || indexed_column || '_trgm_idx',
-        indexed_table,
-        indexed_column,
-        opclass_schema
-      );
-    end if;
+    execute format(
+      'create index %I on public.%I using gin (public.unaccent_search(%I) %I.gin_trgm_ops)',
+      indexed_table || '_' || indexed_column || '_trgm_idx',
+      indexed_table,
+      indexed_column,
+      opclass_schema
+    );
   end loop;
 end
 $$;
@@ -122,59 +121,6 @@ as $$
 $$;
 revoke all on function public.search_catalog(text, integer) from public, anon;
 grant execute on function public.search_catalog(text, integer) to authenticated;
-
-with ranked_brands as (
-  select id,
-    first_value(id) over (
-      partition by clinic_id, lower(btrim(name))
-      order by created_at, id
-    ) as canonical_id
-  from public.brands
-)
-update public.inventory_items item
-set brand_id = ranked.canonical_id
-from ranked_brands ranked
-where item.brand_id = ranked.id
-  and ranked.id <> ranked.canonical_id;
-
-with ranked_brands as (
-  select id,
-    first_value(id) over (
-      partition by clinic_id, lower(btrim(name))
-      order by created_at, id
-    ) as canonical_id
-  from public.brands
-)
-update public.catalog_products product
-set brand_id = ranked.canonical_id
-from ranked_brands ranked
-where product.brand_id = ranked.id
-  and ranked.id <> ranked.canonical_id;
-
-with ranked_brands as (
-  select id,
-    row_number() over (
-      partition by clinic_id, lower(btrim(name))
-      order by created_at, id
-    ) as duplicate_number
-  from public.brands
-)
-delete from public.brands brand
-using ranked_brands ranked
-where brand.id = ranked.id
-  and ranked.duplicate_number > 1;
-
-update public.brands set name = btrim(name) where name <> btrim(name);
-
-drop index if exists public.brands_global_name_key;
-drop index if exists public.brands_clinic_name_key;
-create unique index brands_global_name_key
-  on public.brands(lower(btrim(name))) where clinic_id is null;
-create unique index brands_clinic_name_key
-  on public.brands(clinic_id, lower(btrim(name))) where clinic_id is not null;
-
-create index if not exists support_replies_report_created_idx
-  on public.support_replies(report_id, created_at);
 
 create or replace function public.search_inventory(
   search_term text default '',
@@ -251,6 +197,5 @@ as $$
   limit greatest(1, least(result_limit, 100))
   offset greatest(0, result_offset)
 $$;
-
 revoke all on function public.search_inventory(text, uuid, text, integer, integer) from public, anon;
 grant execute on function public.search_inventory(text, uuid, text, integer, integer) to authenticated;

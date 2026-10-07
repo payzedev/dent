@@ -17,6 +17,10 @@ type Stats = { users: number; clinics: number; items: number; products: number; 
 const emptyStats: Stats = { users: 0, clinics: 0, items: 0, products: 0, categories: 0, brands: 0, reports: 0 }
 const adminPageSize = 50
 
+function normalizeBrandName(name: string) {
+  return name.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase().trim()
+}
+
 export function AdminConsole() {
   const t = useTranslations()
   const locale = useLocale()
@@ -179,7 +183,7 @@ export function AdminConsole() {
           barcode: suggestion.barcode,
           category_id: categoryIds[0] ?? null,
           category_ids: categoryIds,
-          brand_id: brands.find((brand) => brand.name.toLocaleLowerCase() === suggestion.brand?.toLocaleLowerCase())?.id ?? null,
+          brand_id: brands.find((brand) => normalizeBrandName(brand.name) === normalizeBrandName(suggestion.brand ?? ''))?.id ?? null,
           approved_image_path: null,
           is_approved: false,
           presentation: suggestion.presentation,
