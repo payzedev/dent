@@ -78,21 +78,30 @@ export async function POST(request: NextRequest) {
     approved_image_path: text(body.approved_image_path, 512) || null,
     is_approved: false,
   }
-  const { data: existing } = await supabase.from('telegram_catalog_operations').select('product_id').eq('idempotency_key', idempotencyKey).maybeSingle()
-  if (existing?.product_id) return NextResponse.json({ product_id: existing.product_id, reused: true })
-  if (values.barcode) {
-    const { data: duplicate } = await supabase.from('catalog_products').select('id,name').eq('barcode', values.barcode).maybeSingle()
-    if (duplicate) return NextResponse.json({ error: 'Ya existe un producto con ese código de barras', duplicate }, { status: 409 })
+  const { data: result, error } = await supabase.rpc('create_telegram_catalog_product', {
+    p_idempotency_key: idempotencyKey,
+    p_telegram_user_id: identity.telegramUserId,
+    p_created_by: identity.userId,
+    p_name: values.name,
+    p_description: values.description,
+    p_barcode: values.barcode,
+    p_category_id: values.category_id,
+    p_brand_id: values.brand_id,
+    p_presentation: values.presentation,
+    p_product_type: values.product_type,
+    p_model: values.model,
+    p_color: values.color,
+    p_approved_image_path: values.approved_image_path,
+  })
+  if (error) {
+    if (error.code === '23505' || error.message?.includes('duplicate barcode')) {
+      return NextResponse.json({ error: 'Ya existe un producto con ese código de barras' }, { status: 409 })
+    }
+    return NextResponse.json({ error: 'No se pudo crear el producto' }, { status: 500 })
   }
-  const { data: product, error } = await supabase.from('catalog_products').insert(values).select('id,name,description,barcode,category_id,brand_id,presentation,product_type,model,color,approved_image_path,is_approved').single()
-  if (error || !product) return NextResponse.json({ error: 'No se pudo crear el producto' }, { status: 500 })
-  const { error: operationError } = await supabase.from('telegram_catalog_operations').insert({ idempotency_key: idempotencyKey, telegram_user_id: identity.telegramUserId, product_id: product.id, created_by: identity.userId })
-  if (operationError) {
-    const { data: concurrent } = await supabase.from('telegram_catalog_operations').select('product_id').eq('idempotency_key', idempotencyKey).maybeSingle()
-    if (concurrent?.product_id) return NextResponse.json({ product_id: concurrent.product_id, reused: true })
-    return NextResponse.json({ error: 'Producto creado, pero no se pudo registrar la operación' }, { status: 500 })
-  }
-  return NextResponse.json({ product, product_id: product.id, reused: false }, { status: 201 })
+  const operation = result?.[0]
+  if (!operation?.product_id) return NextResponse.json({ error: 'Respuesta inválida del catálogo' }, { status: 500 })
+  return NextResponse.json({ product_id: operation.product_id, reused: operation.reused }, { status: operation.reused ? 200 : 201 })
 }
 
 export async function HEAD(request: NextRequest) {

@@ -16,8 +16,13 @@ TIMEOUT = (10, 120)
 
 
 def db():
-    conn = sqlite3.connect(DB)
-    conn.execute('create table if not exists drafts (chat_id integer primary key, payload text not null, updated_at integer not null)')
+    conn = sqlite3.connect(DB, timeout=30)
+    conn.execute('pragma journal_mode = wal')
+    conn.execute('create table if not exists drafts (chat_id integer primary key, telegram_user_id integer, payload text not null, updated_at integer not null)')
+    columns = {row[1] for row in conn.execute('pragma table_info(drafts)')}
+    if 'telegram_user_id' not in columns:
+        conn.execute('alter table drafts add column telegram_user_id integer')
+    conn.execute('create table if not exists worker_state (name text primary key, value text not null)')
     conn.commit(); return conn
 
 
@@ -56,17 +61,20 @@ def analyze(image: bytes, note: str) -> dict[str, Any]:
     return value
 
 
-def draft(chat_id: int, payload: dict[str, Any]):
-    conn = db(); conn.execute('insert or replace into drafts values (?, ?, ?)', (chat_id, json.dumps(payload), int(time.time()))); conn.commit(); conn.close()
+def draft(chat_id: int, telegram_user_id: int, payload: dict[str, Any]):
+    conn = db()
+    conn.execute('insert or replace into drafts values (?, ?, ?, ?)', (chat_id, telegram_user_id, json.dumps(payload), int(time.time())))
+    conn.commit(); conn.close()
 
 
-def get_draft(chat_id: int):
-    row = db().execute('select payload from drafts where chat_id = ?', (chat_id,)).fetchone()
+def get_draft(chat_id: int, telegram_user_id: int):
+    conn = db(); row = conn.execute('select payload from drafts where chat_id = ? and telegram_user_id = ?', (chat_id, telegram_user_id)).fetchone(); conn.close()
     return json.loads(row[0]) if row else None
 
 
 def handle_message(message: dict[str, Any]):
     user = message['from']; chat_id = message['chat']['id']
+    if message['chat'].get('type') != 'private': return
     if not allowed(user['id']): send(chat_id, 'Acceso denegado.'); return
     text = message.get('text', '').strip()
     if text in ('/start', '/help'):
@@ -74,7 +82,7 @@ def handle_message(message: dict[str, Any]):
     elif text == '/status':
         ok, status = ollama_ready(); send(chat_id, status + ('\nAPI configurada.' if API and SECRET else '\nAPI no configurada.'))
     elif text in ('/nuevo', '/cancel'):
-        db().execute('delete from drafts where chat_id = ?', (chat_id,)).connection.commit(); send(chat_id, 'Borrador cancelado.' if text == '/cancel' else 'Envía la fotografía del producto con una nota opcional.')
+        conn = db(); conn.execute('delete from drafts where chat_id = ?', (chat_id,)); conn.commit(); conn.close(); send(chat_id, 'Borrador cancelado.' if text == '/cancel' else 'Envía la fotografía del producto con una nota opcional.')
     elif text.startswith('/buscar '):
         response = requests.get(f'{API}/api/telegram/catalog', params={'q': text[8:]}, headers=headers(user['id']), timeout=TIMEOUT)
         send(chat_id, json.dumps(response.json(), ensure_ascii=False)[:3500])
@@ -82,7 +90,7 @@ def handle_message(message: dict[str, Any]):
         photo = message['photo'][-1]; file = tg('getFile', {'file_id': photo['file_id']}); image = requests.get(f"https://api.telegram.org/file/bot{os.environ['TELEGRAM_BOT_TOKEN']}/{file['file_path']}", timeout=TIMEOUT).content
         ok, status = ollama_ready()
         if not ok: send(chat_id, status + '\nInstala el modelo y reintenta.'); return
-        payload = analyze(image, message.get('caption', '')); draft(chat_id, payload)
+        payload = analyze(image, message.get('caption', '')); draft(chat_id, user['id'], payload)
         send(chat_id, 'Propuesta:\n' + json.dumps(payload, ensure_ascii=False, indent=2)[:3500], [[{'text': 'Confirmar y crear ficha', 'callback_data': 'confirm'}, {'text': 'Cancelar', 'callback_data': 'cancel'}]])
 
 
@@ -93,8 +101,9 @@ def callback(query: dict[str, Any]):
     user_id = query['from']['id']; chat_id = query['message']['chat']['id']; action = query['data']
     tg('answerCallbackQuery', {'callback_query_id': query['id']})
     if not allowed(user_id): send(chat_id, 'Acceso denegado.'); return
-    if action == 'cancel': db().execute('delete from drafts where chat_id = ?', (chat_id,)).connection.commit(); send(chat_id, 'Borrador cancelado.'); return
-    payload = get_draft(chat_id)
+    if action == 'cancel':
+        conn = db(); conn.execute('delete from drafts where chat_id = ? and telegram_user_id = ?', (chat_id, user_id)); conn.commit(); conn.close(); send(chat_id, 'Borrador cancelado.'); return
+    payload = get_draft(chat_id, user_id)
     if not payload: send(chat_id, 'El borrador expiró. Usa /nuevo.'); return
     response = requests.post(f'{API}/api/telegram/catalog', headers=headers(user_id), json=payload, timeout=TIMEOUT)
     if response.status_code in (200, 201): db().execute('delete from drafts where chat_id = ?', (chat_id,)).connection.commit(); send(chat_id, 'Producto agregado al catálogo compartido. ID: ' + response.json()['product_id'])
