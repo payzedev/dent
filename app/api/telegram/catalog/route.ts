@@ -45,6 +45,25 @@ function text(value: unknown, max: number) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
 }
 
+function uuid(value: unknown) {
+  const candidate = text(value, 64)
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(candidate) ? candidate : null
+}
+
+async function resolveReference(supabase: ReturnType<typeof getSupabase>, value: unknown, table: 'categories' | 'brands') {
+  const label = text(value, 180)
+  if (!label) return null
+  const id = uuid(value)
+  if (table === 'categories') {
+    const query = supabase.from('categories').select('id').eq('is_active', true)
+    const { data } = id ? await query.eq('id', id).maybeSingle() : await query.or(`name_en.ilike.${label},name_es.ilike.${label}`).limit(2)
+    return Array.isArray(data) ? (data.length === 1 ? data[0].id : null) : (data?.id ?? null)
+  }
+  const query = supabase.from('brands').select('id').is('clinic_id', null)
+  const { data } = id ? await query.eq('id', id).maybeSingle() : await query.ilike('name', label).limit(2)
+  return Array.isArray(data) ? (data.length === 1 ? data[0].id : null) : (data?.id ?? null)
+}
+
 export async function GET(request: NextRequest) {
   const supabase = getSupabase()
   if (!authorized(request)) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
@@ -67,12 +86,16 @@ export async function POST(request: NextRequest) {
   const name = text(body.name, 180)
   if (!name || !idempotencyKey) return NextResponse.json({ error: 'name e idempotency_key son obligatorios' }, { status: 400 })
   const allowedPresentations = new Set(['individual', 'set', 'box'])
+  const categoryId = await resolveReference(supabase, body.category_id, 'categories')
+  const brandId = await resolveReference(supabase, body.brand_id, 'brands')
+  if (text(body.category_id, 64) && !categoryId) return NextResponse.json({ error: 'Categoría inválida o ambigua' }, { status: 400 })
+  if (text(body.brand_id, 64) && !brandId) return NextResponse.json({ error: 'Marca inválida, ambigua o no global' }, { status: 400 })
   const values = {
     name,
     description: text(body.description, 2000),
     barcode: text(body.barcode, 128) || null,
-    category_id: text(body.category_id, 64) || null,
-    brand_id: text(body.brand_id, 64) || null,
+    category_id: categoryId,
+    brand_id: brandId,
     presentation: allowedPresentations.has(text(body.presentation, 20)) ? text(body.presentation, 20) : 'individual',
     product_type: text(body.product_type, 128), model: text(body.model, 128), color: text(body.color, 128),
     approved_image_path: text(body.approved_image_path, 512) || null,

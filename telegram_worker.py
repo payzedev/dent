@@ -22,6 +22,7 @@ def db():
     columns = {row[1] for row in conn.execute('pragma table_info(drafts)')}
     if 'telegram_user_id' not in columns:
         conn.execute('alter table drafts add column telegram_user_id integer')
+        conn.execute('update drafts set telegram_user_id = json_extract(payload, \'$.telegram_user_id\') where telegram_user_id is null and json_valid(payload)')
     conn.execute('create table if not exists worker_state (name text primary key, value text not null)')
     conn.commit(); return conn
 
@@ -63,7 +64,7 @@ def analyze(image: bytes, note: str) -> dict[str, Any]:
 
 def draft(chat_id: int, telegram_user_id: int, payload: dict[str, Any]):
     conn = db()
-    conn.execute('insert or replace into drafts values (?, ?, ?, ?)', (chat_id, telegram_user_id, json.dumps(payload), int(time.time())))
+    conn.execute('insert or replace into drafts (chat_id, telegram_user_id, payload, updated_at) values (?, ?, ?, ?)', (chat_id, telegram_user_id, json.dumps(payload), int(time.time())))
     conn.commit(); conn.close()
 
 
@@ -106,7 +107,14 @@ def callback(query: dict[str, Any]):
     payload = get_draft(chat_id, user_id)
     if not payload: send(chat_id, 'El borrador expiró. Usa /nuevo.'); return
     response = requests.post(f'{API}/api/telegram/catalog', headers=headers(user_id), json=payload, timeout=TIMEOUT)
-    if response.status_code in (200, 201): db().execute('delete from drafts where chat_id = ?', (chat_id,)).connection.commit(); send(chat_id, 'Producto agregado al catálogo compartido. ID: ' + response.json()['product_id'])
+    if response.status_code in (200, 201):
+        conn = db()
+        try:
+            conn.execute('delete from drafts where chat_id = ? and telegram_user_id = ?', (chat_id, user_id))
+            conn.commit()
+        finally:
+            conn.close()
+        send(chat_id, 'Producto agregado al catálogo compartido. ID: ' + response.json()['product_id'])
     else: send(chat_id, 'No se pudo crear la ficha: ' + response.text[:500])
 
 

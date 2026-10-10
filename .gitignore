@@ -14,3 +14,17 @@ node_modules
 .next/
 *.tsbuildinfo
 .DS_Store
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+__pycache__/
+*.pyc
+telegram_worker_uploads/
+*.jpg
+*.jpeg
+*.png
+*.webp
