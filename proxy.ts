@@ -10,7 +10,7 @@ export async function proxy(request: NextRequest) {
   const pathname = request.nextUrl.pathname
   const next = `${pathname}${request.nextUrl.search}`
   const nextParam = next.startsWith('/') && !next.startsWith('//') ? next : '/'
-  if (!user && pathname !== '/login' && pathname !== '/signup' && pathname !== '/forgot-password' && pathname !== '/reset-password') {
+  if (!user && pathname !== '/login' && pathname !== '/signup' && pathname !== '/forgot-password' && pathname !== '/reset-password' && pathname !== '/api/telegram/catalog') {
     const url = request.nextUrl.clone(); url.pathname = '/login'; url.search = `?next=${encodeURIComponent(nextParam)}`; return NextResponse.redirect(url)
   }
   if (user && (pathname === '/login' || pathname === '/signup')) { const url = request.nextUrl.clone(); url.pathname = '/'; url.search = ''; return NextResponse.redirect(url) }

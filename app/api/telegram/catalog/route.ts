@@ -10,6 +10,14 @@ function getSupabase() {
   return createClient(url, key, { auth: { autoRefreshToken: false, persistSession: false } })
 }
 
+function configurationError(error: unknown) {
+  return error instanceof Error && error.message === 'Supabase server configuration is missing'
+}
+
+function databaseError() {
+  return NextResponse.json({ error: 'Error de configuración o base de datos del catálogo' }, { status: 500 })
+}
+
 type ProductInput = {
   name?: unknown
   description?: unknown
@@ -65,21 +73,26 @@ async function resolveReference(supabase: ReturnType<typeof getSupabase>, value:
 }
 
 export async function GET(request: NextRequest) {
-  const supabase = getSupabase()
   if (!authorized(request)) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
-  if (!await telegramIdentity(request)) return NextResponse.json({ error: 'Cuenta de Telegram no vinculada o sin permisos' }, { status: 403 })
-  const query = text(request.nextUrl.searchParams.get('q'), 128)
-  if (query.length < 2) return NextResponse.json({ products: [] })
-  const { data, error } = await supabase.rpc('search_catalog', { search_term: query, result_limit: 8 })
-  if (error) return NextResponse.json({ error: 'No se pudo consultar el catálogo' }, { status: 500 })
-  return NextResponse.json({ products: data ?? [] })
+  try {
+    const supabase = getSupabase()
+    if (!await telegramIdentity(request)) return NextResponse.json({ error: 'Cuenta de Telegram no vinculada o sin permisos' }, { status: 403 })
+    const query = text(request.nextUrl.searchParams.get('q'), 128)
+    if (query.length < 2) return NextResponse.json({ products: [] })
+    const { data, error } = await supabase.rpc('search_catalog', { search_term: query, result_limit: 8 })
+    if (error) return databaseError()
+    return NextResponse.json({ products: data ?? [] })
+  } catch (error) {
+    return configurationError(error) ? NextResponse.json({ error: 'Servicio de catálogo no configurado' }, { status: 500 }) : databaseError()
+  }
 }
 
 export async function POST(request: NextRequest) {
-  const supabase = getSupabase()
   if (!authorized(request)) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
-  const identity = await telegramIdentity(request)
-  if (!identity) return NextResponse.json({ error: 'Cuenta de Telegram no vinculada o sin permisos' }, { status: 403 })
+  try {
+    const supabase = getSupabase()
+    const identity = await telegramIdentity(request)
+    if (!identity) return NextResponse.json({ error: 'Cuenta de Telegram no vinculada o sin permisos' }, { status: 403 })
   let body: ProductInput & { idempotency_key?: unknown }
   try { body = await request.json() as ProductInput & { idempotency_key?: unknown } } catch { return NextResponse.json({ error: 'JSON inválido' }, { status: 400 }) }
   const idempotencyKey = text(body.idempotency_key, 128)
@@ -124,7 +137,10 @@ export async function POST(request: NextRequest) {
   }
   const operation = result?.[0]
   if (!operation?.product_id) return NextResponse.json({ error: 'Respuesta inválida del catálogo' }, { status: 500 })
-  return NextResponse.json({ product_id: operation.product_id, reused: operation.reused }, { status: operation.reused ? 200 : 201 })
+    return NextResponse.json({ product_id: operation.product_id, reused: operation.reused }, { status: operation.reused ? 200 : 201 })
+  } catch (error) {
+    return configurationError(error) ? NextResponse.json({ error: 'Servicio de catálogo no configurado' }, { status: 500 }) : databaseError()
+  }
 }
 
 export async function HEAD(request: NextRequest) {
