@@ -24,6 +24,8 @@ type ProductInput = {
   barcode?: unknown
   category_id?: unknown
   brand_id?: unknown
+  category_name?: unknown
+  brand_name?: unknown
   presentation?: unknown
   product_type?: unknown
   model?: unknown
@@ -99,10 +101,12 @@ export async function POST(request: NextRequest) {
   const name = text(body.name, 180)
   if (!name || !idempotencyKey) return NextResponse.json({ error: 'name e idempotency_key son obligatorios' }, { status: 400 })
   const allowedPresentations = new Set(['individual', 'set', 'box'])
-  const categoryId = await resolveReference(supabase, body.category_id, 'categories')
-  const brandId = await resolveReference(supabase, body.brand_id, 'brands')
-  if (text(body.category_id, 64) && !categoryId) return NextResponse.json({ error: 'Categoría inválida o ambigua' }, { status: 400 })
-  if (text(body.brand_id, 64) && !brandId) return NextResponse.json({ error: 'Marca inválida, ambigua o no global' }, { status: 400 })
+  const categoryId = uuid(body.category_id)
+  const brandId = uuid(body.brand_id)
+  const categoryName = text(body.category_name, 180)
+  const brandName = text(body.brand_name, 180)
+  if (text(body.category_id, 64) && !categoryId) return NextResponse.json({ error: 'category_id inválido; use category_name para una propuesta' }, { status: 400 })
+  if (text(body.brand_id, 64) && !brandId) return NextResponse.json({ error: 'brand_id inválido; use brand_name para una propuesta' }, { status: 400 })
   const values = {
     name,
     description: text(body.description, 2000),
@@ -114,7 +118,7 @@ export async function POST(request: NextRequest) {
     approved_image_path: text(body.approved_image_path, 512) || null,
     is_approved: false,
   }
-  const { data: result, error } = await supabase.rpc('create_telegram_catalog_product', {
+  const { data: result, error } = await supabase.rpc('create_telegram_catalog_product_pending', {
     p_idempotency_key: idempotencyKey,
     p_telegram_user_id: identity.telegramUserId,
     p_created_by: identity.userId,
@@ -123,6 +127,8 @@ export async function POST(request: NextRequest) {
     p_barcode: values.barcode,
     p_category_id: values.category_id,
     p_brand_id: values.brand_id,
+    p_category_name: categoryName,
+    p_brand_name: brandName,
     p_presentation: values.presentation,
     p_product_type: values.product_type,
     p_model: values.model,
