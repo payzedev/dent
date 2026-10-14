@@ -59,9 +59,11 @@ async function telegramIdentity(request: NextRequest) {
   const raw = request.headers.get('x-telegram-user-id')
   const telegramUserId = raw && /^\d{1,30}$/.test(raw) ? raw : null
   if (!telegramUserId) return null
-  const { data } = await supabase.from('telegram_accounts').select('user_id').eq('telegram_user_id', telegramUserId).eq('enabled', true).maybeSingle()
+  const { data, error: accountError } = await supabase.from('telegram_accounts').select('user_id').eq('telegram_user_id', telegramUserId).eq('enabled', true).maybeSingle()
+  if (accountError) throw accountError
   if (!data?.user_id) return null
-  const { data: profile } = await supabase.from('profiles').select('id,role').eq('id', data.user_id).maybeSingle()
+  const { data: profile, error: profileError } = await supabase.from('profiles').select('id,role').eq('id', data.user_id).maybeSingle()
+  if (profileError) throw profileError
   if (!profile || profile.role !== 'admin') return null
   return { userId: profile.id, telegramUserId }
 }
@@ -172,7 +174,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'La cuenta no tiene permisos para crear productos', request_id: id }, { status: 403 })
     }
     if (error.code === 'PGRST202' || error.code === '42883' || error.message?.toLowerCase().includes('function') && error.message.toLowerCase().includes('does not exist')) {
-      return databaseError(id, 503, 'El servicio de catálogo no está disponible; reintenta más tarde')
+      return NextResponse.json({ error: 'Falta aplicar la migración del catálogo de Telegram en Supabase', error_code: 'CATALOG_MIGRATION_REQUIRED', request_id: id }, { status: 503 })
+    }
+    if (error.code === '42P01' || error.code === '42703' || error.code === 'PGRST204') {
+      return NextResponse.json({ error: 'El esquema del catálogo de Telegram está incompleto en Supabase', error_code: 'CATALOG_SCHEMA_REQUIRED', request_id: id }, { status: 503 })
     }
     return databaseError(id)
   }
