@@ -14,8 +14,23 @@ function configurationError(error: unknown) {
   return error instanceof Error && error.message === 'Supabase server configuration is missing'
 }
 
-function databaseError() {
-  return NextResponse.json({ error: 'Error de configuración o base de datos del catálogo' }, { status: 500 })
+function databaseError(requestId: string, status = 500, message = 'Error de configuración o base de datos del catálogo') {
+  return NextResponse.json({ error: message, request_id: requestId }, { status })
+}
+
+function requestId(request: NextRequest) {
+  return request.headers.get('x-request-id')?.trim().slice(0, 128) || crypto.randomUUID()
+}
+
+function logRpcError(requestId: string, functionName: string, error: { code?: string; message?: string; details?: string; hint?: string }) {
+  console.error('[telegram/catalog] RPC failed', {
+    request_id: requestId,
+    function: functionName,
+    code: error.code,
+    message: error.message,
+    details: error.details,
+    hint: error.hint,
+  })
 }
 
 type ProductInput = {
@@ -75,22 +90,31 @@ async function resolveReference(supabase: ReturnType<typeof getSupabase>, value:
 }
 
 export async function GET(request: NextRequest) {
-  if (!authorized(request)) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+  const id = requestId(request)
+  if (!authorized(request)) return NextResponse.json({ error: 'No autorizado', request_id: id }, { status: 401 })
   try {
     const supabase = getSupabase()
-    if (!await telegramIdentity(request)) return NextResponse.json({ error: 'Cuenta de Telegram no vinculada o sin permisos' }, { status: 403 })
+    if (!await telegramIdentity(request)) return NextResponse.json({ error: 'Cuenta de Telegram no vinculada o sin permisos', request_id: id }, { status: 403 })
     const query = text(request.nextUrl.searchParams.get('q'), 128)
     if (query.length < 2) return NextResponse.json({ products: [] })
     const { data, error } = await supabase.rpc('search_catalog', { search_term: query, result_limit: 8 })
-    if (error) return databaseError()
-    return NextResponse.json({ products: data ?? [] })
+    if (error) {
+      logRpcError(id, 'search_catalog', error)
+      const status = error.code === 'PGRST202' ? 503 : 500
+      const message = status === 503 ? 'El buscador del catálogo no está disponible' : 'No se pudo consultar el catálogo'
+      return databaseError(id, status, message)
+    }
+    return NextResponse.json({ products: Array.isArray(data) ? data : [], request_id: id })
   } catch (error) {
-    return configurationError(error) ? NextResponse.json({ error: 'Servicio de catálogo no configurado' }, { status: 500 }) : databaseError()
+    if (configurationError(error)) return databaseError(id, 500, 'Servicio de catálogo no configurado')
+    console.error('[telegram/catalog] Unexpected request failure', { request_id: id, error: error instanceof Error ? error.message : 'unknown error' })
+    return databaseError(id)
   }
 }
 
 export async function POST(request: NextRequest) {
-  if (!authorized(request)) return NextResponse.json({ error: 'No autorizado' }, { status: 401 })
+  const id = requestId(request)
+  if (!authorized(request)) return NextResponse.json({ error: 'No autorizado', request_id: id }, { status: 401 })
   try {
     const supabase = getSupabase()
     const identity = await telegramIdentity(request)
@@ -136,34 +160,36 @@ export async function POST(request: NextRequest) {
     p_approved_image_path: values.approved_image_path,
   })
   if (error) {
-    // Registrar solo detalles del error SQL; nunca tokens ni cabeceras.
-    console.error('[telegram/catalog] Error RPC', {
-      code: error.code,
-      message: error.message,
-      details: error.details,
-      hint: error.hint,
-    })
+    logRpcError(id, 'create_telegram_catalog_product_pending', error)
 
-    if (error.code === '23505' || error.message?.includes('duplicate barcode')) {
-      return NextResponse.json(
-        { error: 'Ya existe un producto con ese código de barras' },
-        { status: 409 }
-      )
+    if (error.code === '23505' || error.message?.toLowerCase().includes('duplicate barcode')) {
+      return NextResponse.json({ error: 'Ya existe un producto con ese código de barras', request_id: id }, { status: 409 })
     }
-
-    return NextResponse.json(
-      { error: 'No se pudo crear el producto' },
-      { status: 500 }
-    )
+    if (error.code === '22023') {
+      return NextResponse.json({ error: 'Los datos del producto no son válidos', request_id: id }, { status: 400 })
+    }
+    if (error.code === '42501') {
+      return NextResponse.json({ error: 'La cuenta no tiene permisos para crear productos', request_id: id }, { status: 403 })
+    }
+    if (error.code === 'PGRST202' || error.code === '42883' || error.message?.toLowerCase().includes('function') && error.message.toLowerCase().includes('does not exist')) {
+      return databaseError(id, 503, 'El servicio de catálogo no está disponible; reintenta más tarde')
+    }
+    return databaseError(id)
   }
   const operation = result?.[0]
-  if (!operation?.product_id) return NextResponse.json({ error: 'Respuesta inválida del catálogo' }, { status: 500 })
-    return NextResponse.json({ product_id: operation.product_id, reused: operation.reused }, { status: operation.reused ? 200 : 201 })
+  if (!operation?.product_id) {
+    console.error('[telegram/catalog] Invalid RPC response', { request_id: id, function: 'create_telegram_catalog_product_pending' })
+    return databaseError(id, 502, 'Respuesta inválida del servicio de catálogo')
+  }
+  return NextResponse.json({ product_id: operation.product_id, reused: operation.reused, request_id: id }, { status: operation.reused ? 200 : 201 })
   } catch (error) {
-    return configurationError(error) ? NextResponse.json({ error: 'Servicio de catálogo no configurado' }, { status: 500 }) : databaseError()
+    if (configurationError(error)) return databaseError(id, 500, 'Servicio de catálogo no configurado')
+    console.error('[telegram/catalog] Unexpected request failure', { request_id: id, error: error instanceof Error ? error.message : 'unknown error' })
+    return databaseError(id)
   }
 }
 
 export async function HEAD(request: NextRequest) {
-  return authorized(request) ? new NextResponse(null, { status: 204 }) : new NextResponse(null, { status: 401 })
+  const id = requestId(request)
+  return authorized(request) ? new NextResponse(null, { status: 204, headers: { 'x-request-id': id } }) : new NextResponse(null, { status: 401, headers: { 'x-request-id': id } })
 }
