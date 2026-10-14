@@ -136,10 +136,25 @@ export async function POST(request: NextRequest) {
     p_approved_image_path: values.approved_image_path,
   })
   if (error) {
+    // Registrar solo detalles del error SQL; nunca tokens ni cabeceras.
+    console.error('[telegram/catalog] Error RPC', {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+    })
+
     if (error.code === '23505' || error.message?.includes('duplicate barcode')) {
-      return NextResponse.json({ error: 'Ya existe un producto con ese código de barras' }, { status: 409 })
+      return NextResponse.json(
+        { error: 'Ya existe un producto con ese código de barras' },
+        { status: 409 }
+      )
     }
-    return NextResponse.json({ error: 'No se pudo crear el producto' }, { status: 500 })
+
+    return NextResponse.json(
+      { error: 'No se pudo crear el producto' },
+      { status: 500 }
+    )
   }
   const operation = result?.[0]
   if (!operation?.product_id) return NextResponse.json({ error: 'Respuesta inválida del catálogo' }, { status: 500 })
