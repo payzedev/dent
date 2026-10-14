@@ -115,7 +115,20 @@ def callback(query: dict[str, Any]):
         finally:
             conn.close()
         send(chat_id, 'Producto agregado al catálogo compartido. ID: ' + response.json()['product_id'])
-    else: send(chat_id, 'No se pudo crear la ficha: ' + response.text[:500])
+    else:
+        try:
+            error_payload = response.json()
+            error_message = str(error_payload.get('error') or response.text[:500])
+            request_id = str(error_payload.get('request_id') or '')
+            error_code = str(error_payload.get('error_code') or '')
+            suffix = f' [{error_code}]' if error_code else ''
+            if request_id:
+                suffix += f' (solicitud {request_id})'
+            print(f'Error al guardar producto: HTTP {response.status_code}: {error_message}{suffix}')
+            send(chat_id, f'No se pudo crear la ficha: {error_message}{suffix}')
+        except ValueError:
+            print(f'Error al guardar producto: HTTP {response.status_code}')
+            send(chat_id, f'No se pudo crear la ficha: HTTP {response.status_code}')
 
 
 def main():
